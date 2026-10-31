@@ -1,0 +1,25 @@
+{
+  "name": "parallax",
+  "private": true,
+  "packageManager": "pnpm@11.5.2",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @parallax/web --filter @parallax/api dev",
+    "dev:web": "pnpm --filter @parallax/web dev",
+    "dev:api": "pnpm --filter @parallax/api dev",
+    "worker": "pnpm --filter @parallax/api worker",
+    "seed:themes": "pnpm --filter @parallax/api seed:themes",
+    "review:themes": "pnpm --filter @parallax/api review:themes",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build",
+    "test:e2e": "pnpm --filter @parallax/web test:e2e"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "tsx": "^4.20.6",
+    "@types/node": "^24.0.0",
+    "vitest": "^4.0.0"
+  }
+}

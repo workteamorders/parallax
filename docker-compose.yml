@@ -1,0 +1,34 @@
+name: parallax
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: parallax
+      POSTGRES_PASSWORD: parallax_local_only
+      POSTGRES_DB: parallax
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - parallax_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parallax -d parallax"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:56379:6379"
+    volumes:
+      - parallax_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+volumes:
+  parallax_postgres:
+  parallax_redis:
