@@ -69,6 +69,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@anchor-lang/core':
+        specifier: 1.0.1
+        version: 1.0.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       '@fontsource-variable/manrope':
         specifier: ^5.2.8
         version: 5.3.0

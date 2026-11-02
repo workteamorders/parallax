@@ -15,6 +15,7 @@ import {
 } from "@/lib/trade-math";
 import {
   DEVNET_RPC_DEFAULT,
+  FAUCET_AMOUNT_UNITS,
   TradeError,
   approveBuilder,
   cancelAllOnMarket,
@@ -24,6 +25,7 @@ import {
   devnetMarketName,
   findApprovedBuilderIndex,
   hasUserAccount,
+  mintTestQuote,
   openSession,
   placeOrder,
   walletQuoteBalance,
@@ -190,6 +192,23 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
               <dd>{account === null ? "--" : account ? "Created" : "Not created yet"}</dd>
             </div>
           </dl>
+
+          {session.core.faucet && (
+            <button
+              className="button full"
+              disabled={!signer || busy !== null}
+              onClick={() =>
+                run("Get test dUSDT", async () => {
+                  if (!signer) throw new TradeError("Connect a wallet first", "config");
+                  const result = await mintTestQuote(session, signer);
+                  await refresh(session);
+                  return result;
+                })
+              }
+            >
+              Get {unitsToDecimal(FAUCET_AMOUNT_UNITS, 6)} test dUSDT (devnet faucet)
+            </button>
+          )}
 
           <label className="trade-input">
             <span>

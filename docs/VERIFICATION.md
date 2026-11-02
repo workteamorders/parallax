@@ -76,3 +76,9 @@ Not done: any signed devnet transaction, Playwright e2e against live data, the D
 ## Live-only mode (verified in a cloud workspace, 2026-11-01)
 
 Web unit tests (20) cover: all sources failing (no quote, no approved theme, honest health), manifest verification (a contract whose rules differ from the reviewed fingerprint cannot stay approved), rejected/expired contracts never fetched, env-driven trading flag (never mainnet), candle input validation before any network call, candle success/404, history empty/404. The production build ran in live mode and was exercised over HTTP and in Chromium with the upstream hosts unreachable: the pages render, every route answers as designed, there were no console errors. NOT verified: the success path against the real Jupiter and Velocity services, and Vercel itself.
+
+## Devnet trading rewrite and real-program simulation (2026-11-03)
+
+The first deployed build failed in the browser with "AnchorProvider is not supported in the browser build": the SDK's browser build cannot run `VelocityClient`. The module was rewritten on `VelocityCore` with a `program.instruction` shim built from the camelCased IDL (a coder built from the raw snake_case IDL silently writes zeroes for camelCase fields, which the parity tests caught).
+
+Verified: web unit tests (34, including 14 new: shim parity with Anchor, offline session flows, faucet), typecheck, lint, production build, and a Chromium run against the production bundle with a fake Wallet Standard wallet and a mocked RPC (session opens, market and balance read, one simulation, one wallet prompt). Against the real devnet program, read through the owner's browser: account sizes and discriminators match, and one simulated transaction (faucet mint, create user, deposit, market order, cancel) succeeded. NOT verified: any signed transaction, the builder-code path on chain, Phantom signing.

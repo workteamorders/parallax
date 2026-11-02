@@ -1,18 +1,38 @@
 /**
- * Browser-side Velocity DEVNET trading. Everything here runs in the user's browser: the SDK builds
- * instructions, the transaction is simulated first, and the user's own wallet signs. There is no server
- * key and the API never sees a transaction. The SDK is imported lazily so it only loads when needed.
+ * Browser-side Velocity DEVNET trading. Everything here runs in the user's browser: instructions are
+ * built with the SDK's subscription-free `VelocityCore` (the browser build of the SDK cannot construct
+ * `VelocityClient`, `Program` or `AnchorProvider`), the transaction is simulated first, and the user's own
+ * wallet signs. There is no server key and the API never sees a transaction. The SDK is imported lazily so
+ * it only loads when needed.
  *
  * NOT verified end to end: no order has been signed against devnet from this code. Simulation-first
  * means a bad build fails before anything is sent, but treat every flow as unproven until the owner has
  * run it with a funded devnet wallet (see docs/DEVNET-TRADING.md).
  */
-import type { Connection, PublicKey, Transaction, TransactionInstruction, VersionedTransaction } from "@solana/web3.js";
+import type {
+  AccountMeta,
+  Connection,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  VersionedTransaction,
+} from "@solana/web3.js";
 import { APP_MAX_BUILDER_FEE_TENTHS_BP, clampBuilderFee, isDevnetRpc } from "./trade-math";
+import { makeProgram, type ProgramShim } from "./velocity-program";
 
 export const DEVNET_RPC_DEFAULT = "https://api.devnet.solana.com";
 export const QUOTE_MARKET_INDEX = 0; // dUSDT on devnet
 const ESCROW_ORDER_SLOTS = 16;
+const MAX_PERP_MARKETS = 16;
+const MAX_SPOT_MARKETS = 8;
+const COMPUTE_UNITS = 800_000;
+const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+/** The SDK's devnet token faucet. On the Velocity devnet deployment it is the mint authority of dUSDT, so anyone may mint test tokens. */
+export const TOKEN_FAUCET_PROGRAM = "V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB";
+const FAUCET_MINT_TO_USER = [75, 194, 44, 77, 10, 65, 232, 85]; // sighash("global:mint_to_user"), from the faucet IDL
+export const FAUCET_AMOUNT_UNITS = 100_000_000n; // 100 dUSDT per click
 
 export interface SignerWallet {
   publicKey: PublicKey;
@@ -31,13 +51,32 @@ export class TradeError extends Error {
 }
 
 type Sdk = typeof import("@velocity-exchange/sdk");
-export type VelocityClientT = InstanceType<Sdk["VelocityClient"]>;
+type Web3 = typeof import("@solana/web3.js");
+
+interface LoadedMarket {
+  pubkey: PublicKey;
+  [field: string]: unknown;
+}
+
+interface Core {
+  programId: PublicKey;
+  program: ProgramShim;
+  state: PublicKey;
+  whitelistMint: PublicKey;
+  perpMarkets: Map<number, LoadedMarket>;
+  spotMarkets: Map<number, LoadedMarket>;
+  quoteMint: PublicKey;
+  quoteTokenProgram: PublicKey;
+  /** True when the dUSDT mint authority is the token faucet's PDA, so test tokens can be minted from the wallet. */
+  faucet: boolean;
+}
 
 export interface Session {
-  client: VelocityClientT;
   connection: Connection;
   authority: PublicKey;
   sdk: Sdk;
+  web3: Web3;
+  core: Core;
   close: () => Promise<void>;
 }
 
@@ -45,48 +84,217 @@ export interface SentResult {
   signature: string;
 }
 
+export async function loadCore(sdk: Sdk, web3: Web3, connection: Connection): Promise<Core> {
+  const { VelocityCore } = sdk;
+  const program = makeProgram(sdk, web3);
+  const programId = program.programId;
+  const { pdas } = VelocityCore;
+  const { coder } = program;
+  const state = await pdas.getVelocityStateAccountPublicKey(programId);
+  const perpKeys = Array.from({ length: MAX_PERP_MARKETS }, (_, i) => pdas.getPerpMarketPublicKeySync(programId, i));
+  const spotKeys = Array.from({ length: MAX_SPOT_MARKETS }, (_, i) => pdas.getSpotMarketPublicKeySync(programId, i));
+  const infos = await connection.getMultipleAccountsInfo([state, ...spotKeys, ...perpKeys], "confirmed");
+  const stateInfo = infos[0];
+  if (!stateInfo) {
+    throw new TradeError("Velocity program state was not found on this RPC. Is it a devnet endpoint?", "config");
+  }
+  const stateAccount = coder.accounts.decode<{ whitelistMint: PublicKey }>("state", stateInfo.data as never);
+  const spotMarkets = new Map<number, LoadedMarket>();
+  const perpMarkets = new Map<number, LoadedMarket>();
+  spotKeys.forEach((key, i) => {
+    const info = infos[1 + i];
+    if (info) spotMarkets.set(i, { ...coder.accounts.decode<Record<string, unknown>>("spotMarket", info.data as never), pubkey: key });
+  });
+  perpKeys.forEach((key, i) => {
+    const info = infos[1 + MAX_SPOT_MARKETS + i];
+    if (info) perpMarkets.set(i, { ...coder.accounts.decode<Record<string, unknown>>("perpMarket", info.data as never), pubkey: key });
+  });
+  const quote = spotMarkets.get(QUOTE_MARKET_INDEX);
+  if (!quote) throw new TradeError("Spot market 0 (dUSDT) was not found on this devnet deployment", "config");
+  const quoteMint = quote.mint as PublicKey;
+  const mintInfo = await connection.getAccountInfo(quoteMint, "confirmed");
+  if (!mintInfo) throw new TradeError("The dUSDT mint account was not found on this RPC", "config");
+  const owner = mintInfo.owner.toBase58();
+  if (owner !== TOKEN_PROGRAM && owner !== TOKEN_2022_PROGRAM) {
+    throw new TradeError(`The dUSDT mint is owned by an unexpected program (${owner})`, "config");
+  }
+  // SPL mint layout: u32 option tag, then the 32-byte mint authority.
+  const faucetAuthority = web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("mint_authority"), quoteMint.toBuffer()],
+    new web3.PublicKey(TOKEN_FAUCET_PROGRAM),
+  )[0];
+  const faucet =
+    owner === TOKEN_PROGRAM &&
+    mintInfo.data.length >= 36 &&
+    mintInfo.data.readUInt32LE(0) === 1 &&
+    new web3.PublicKey(mintInfo.data.subarray(4, 36)).equals(faucetAuthority);
+  return {
+    programId,
+    program,
+    state,
+    whitelistMint: stateAccount.whitelistMint,
+    perpMarkets,
+    spotMarkets,
+    quoteMint,
+    quoteTokenProgram: mintInfo.owner,
+    faucet,
+  };
+}
+
 export async function openSession(wallet: SignerWallet, rpcUrl: string = DEVNET_RPC_DEFAULT): Promise<Session> {
   // Hard guard: this ticket never talks to a non-devnet endpoint.
   if (!isDevnetRpc(rpcUrl)) throw new TradeError("Only a devnet RPC endpoint is allowed for test trading.", "config");
   const [sdk, web3] = await Promise.all([import("@velocity-exchange/sdk"), import("@solana/web3.js")]);
   const connection = new web3.Connection(rpcUrl, "confirmed");
-  const client = new sdk.VelocityClient({
-    connection,
-    wallet: wallet as never,
-    env: "devnet",
-  });
-  await client.subscribe();
-  return {
-    client,
-    connection,
-    authority: wallet.publicKey,
-    sdk,
-    close: async () => {
-      await client.unsubscribe();
-    },
-  };
+  const core = await loadCore(sdk, web3, connection);
+  return { connection, authority: wallet.publicKey, sdk, web3, core, close: async () => undefined };
+}
+
+const userAddress = (session: Session) =>
+  session.sdk.VelocityCore.pdas.getUserAccountPublicKeySync(session.core.programId, session.authority, 0);
+const userStatsAddress = (session: Session) =>
+  session.sdk.VelocityCore.pdas.getUserStatsAccountPublicKey(session.core.programId, session.authority);
+const escrowAddress = (session: Session) =>
+  session.sdk.VelocityCore.pdas.getRevenueShareEscrowAccountPublicKey(session.core.programId, session.authority);
+
+function quoteTokenAccount(session: Session, owner: PublicKey = session.authority): PublicKey {
+  const { web3, core } = session;
+  return web3.PublicKey.findProgramAddressSync(
+    [owner.toBuffer(), core.quoteTokenProgram.toBuffer(), core.quoteMint.toBuffer()],
+    new web3.PublicKey(ASSOCIATED_TOKEN_PROGRAM),
+  )[0];
+}
+
+async function accountExists(session: Session, address: PublicKey): Promise<boolean> {
+  return (await session.connection.getAccountInfo(address, "confirmed")) !== null;
 }
 
 /** True when the wallet already has subaccount 0. A missing account is a normal first-use state. */
 export async function hasUserAccount(session: Session): Promise<boolean> {
-  const address = await session.client.getUserAccountPublicKey(0, session.authority);
-  const info = await session.connection.getAccountInfo(address, "confirmed");
-  return info !== null;
+  return accountExists(session, userAddress(session));
 }
 
 /** dUSDT balance of the wallet's token account in base units (6 decimals), or 0n when it has none. */
 export async function walletQuoteBalance(session: Session): Promise<bigint> {
-  const ata = await session.client.getAssociatedTokenAccount(QUOTE_MARKET_INDEX);
   try {
-    const balance = await session.connection.getTokenAccountBalance(ata, "confirmed");
+    const balance = await session.connection.getTokenAccountBalance(quoteTokenAccount(session), "confirmed");
     return BigInt(balance.value.amount);
   } catch {
     return 0n;
   }
 }
 
-async function build(session: Session, ixs: TransactionInstruction[]): Promise<VersionedTransaction> {
-  return session.client.txSender.getVersionedTransaction(ixs, []);
+function marketLookup(map: Map<number, LoadedMarket>, kind: string) {
+  return (index: number) => {
+    const market = map.get(index);
+    if (!market) throw new TradeError(`${kind} market ${index} is not available on this devnet deployment`, "config");
+    return market as never;
+  };
+}
+
+type RemainingParams = Parameters<Sdk["VelocityCore"]["remainingAccounts"]["getRemainingAccounts"]>[1];
+
+function remainingAccounts(session: Session, params: Partial<RemainingParams>): AccountMeta[] {
+  const { core, authority } = session;
+  return session.sdk.VelocityCore.remainingAccounts.getRemainingAccounts(
+    {
+      getPerpMarketAccount: marketLookup(core.perpMarkets, "Perp"),
+      getSpotMarketAccount: marketLookup(core.spotMarkets, "Spot"),
+      getUserAccountAndSlot: () => undefined,
+      activeSubAccountId: 0,
+      authority,
+      perpMarketLastSlotCache: new Map(),
+      spotMarketLastSlotCache: new Map(),
+      mustIncludePerpMarketIndexes: new Set(),
+      mustIncludeSpotMarketIndexes: new Set(),
+    },
+    { userAccounts: [], ...params } as RemainingParams,
+  );
+}
+
+async function fetchUser(session: Session) {
+  const account = await session.sdk.VelocityCore.fetchUserAccount(session.connection, userAddress(session));
+  if (!account) throw new TradeError("Create the Velocity account first", "config");
+  return account;
+}
+
+/** Deposit instruction for the quote market. `existingUser` is the decoded user, or null when it is being created in the same transaction. */
+async function depositInstruction(
+  session: Session,
+  amountUnits: bigint,
+  existingUser: Awaited<ReturnType<typeof fetchUser>> | null,
+): Promise<TransactionInstruction> {
+  const { sdk, core, authority } = session;
+  const spot = core.spotMarkets.get(QUOTE_MARKET_INDEX)!;
+  const remaining = remainingAccounts(session, {
+    userAccounts: existingUser ? [existingUser] : [],
+    writableSpotMarketIndexes: [QUOTE_MARKET_INDEX],
+  });
+  // Token-2022 mints must be passed so the program can read them. Transfer hooks are not supported here.
+  if (core.quoteTokenProgram.toBase58() === TOKEN_2022_PROGRAM) {
+    remaining.push({ pubkey: core.quoteMint, isSigner: false, isWritable: false });
+  }
+  return sdk.VelocityCore.buildDepositInstruction({
+    program: core.program as never,
+    marketIndex: QUOTE_MARKET_INDEX,
+    amount: new sdk.BN(amountUnits.toString()),
+    reduceOnly: false,
+    state: core.state,
+    spotMarket: spot.pubkey,
+    spotMarketVault: spot.vault as PublicKey,
+    user: userAddress(session),
+    userStats: userStatsAddress(session),
+    userTokenAccount: quoteTokenAccount(session),
+    authority,
+    tokenProgram: core.quoteTokenProgram,
+    remainingAccounts: remaining,
+  });
+}
+
+async function initializeInstructions(session: Session): Promise<TransactionInstruction[]> {
+  const { sdk, web3, core, authority } = session;
+  const out: TransactionInstruction[] = [];
+  const common = { rent: web3.SYSVAR_RENT_PUBKEY, systemProgram: web3.SystemProgram.programId, state: core.state };
+  if (!(await accountExists(session, userStatsAddress(session)))) {
+    out.push(
+      core.program.instruction.initializeUserStats({
+        accounts: { userStats: userStatsAddress(session), authority, payer: authority, ...common },
+      }),
+    );
+  }
+  const remaining: AccountMeta[] = [];
+  if (!core.whitelistMint.equals(web3.PublicKey.default)) {
+    // Whitelisted deployments expect the payer's token account for the whitelist mint.
+    const ata = web3.PublicKey.findProgramAddressSync(
+      [authority.toBuffer(), new web3.PublicKey(TOKEN_PROGRAM).toBuffer(), core.whitelistMint.toBuffer()],
+      new web3.PublicKey(ASSOCIATED_TOKEN_PROGRAM),
+    )[0];
+    remaining.push({ pubkey: ata, isSigner: false, isWritable: false });
+  }
+  out.push(
+    core.program.instruction.initializeUser(0, sdk.encodeName(sdk.DEFAULT_USER_NAME), {
+      accounts: { user: userAddress(session), userStats: userStatsAddress(session), authority, payer: authority, ...common },
+      remainingAccounts: remaining,
+    }),
+  );
+  return out;
+}
+
+interface Built {
+  tx: VersionedTransaction;
+  blockhash: string;
+  lastValidBlockHeight: number;
+}
+
+async function build(session: Session, payer: PublicKey, ixs: TransactionInstruction[]): Promise<Built> {
+  const { web3, connection } = session;
+  const latest = await connection.getLatestBlockhash("confirmed");
+  const message = new web3.TransactionMessage({
+    payerKey: payer,
+    recentBlockhash: latest.blockhash,
+    instructions: [web3.ComputeBudgetProgram.setComputeUnitLimit({ units: COMPUTE_UNITS }), ...ixs],
+  }).compileToV0Message();
+  return { tx: new web3.VersionedTransaction(message), blockhash: latest.blockhash, lastValidBlockHeight: latest.lastValidBlockHeight };
 }
 
 /**
@@ -99,7 +307,7 @@ export async function simulateSignSend(
   wallet: SignerWallet,
   ixs: TransactionInstruction[],
 ): Promise<SentResult> {
-  const tx = await build(session, ixs);
+  const { tx, blockhash, lastValidBlockHeight } = await build(session, wallet.publicKey, ixs);
   const sim = await session.connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" });
   if (sim.value.err) {
     throw new TradeError(`Simulation failed, nothing was sent: ${JSON.stringify(sim.value.err)}`, "simulation", sim.value.logs ?? undefined);
@@ -118,8 +326,7 @@ export async function simulateSignSend(
     throw new TradeError(error instanceof Error ? error.message : "Send failed", "failed");
   }
   try {
-    const latest = await session.connection.getLatestBlockhash("confirmed");
-    const result = await session.connection.confirmTransaction({ signature, ...latest }, "confirmed");
+    const result = await session.connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
     if (result.value.err) throw new TradeError(`Transaction failed on chain: ${JSON.stringify(result.value.err)}`, "failed");
   } catch (error) {
     if (error instanceof TradeError) throw error;
@@ -128,22 +335,60 @@ export async function simulateSignSend(
   return { signature };
 }
 
+/** Mint test dUSDT to the wallet from the devnet token faucet, creating the wallet's token account if needed. */
+export async function mintTestQuote(session: Session, wallet: SignerWallet, amountUnits: bigint = FAUCET_AMOUNT_UNITS): Promise<SentResult> {
+  const { web3, core, authority } = session;
+  if (!core.faucet) throw new TradeError("The dUSDT mint on this deployment is not controlled by the token faucet", "config");
+  if (amountUnits <= 0n || amountUnits > FAUCET_AMOUNT_UNITS * 10n) throw new TradeError("Faucet amount out of range", "config");
+  const faucetProgram = new web3.PublicKey(TOKEN_FAUCET_PROGRAM);
+  const tokenProgram = new web3.PublicKey(TOKEN_PROGRAM);
+  const mint = core.quoteMint;
+  const ata = quoteTokenAccount(session);
+  const [config] = web3.PublicKey.findProgramAddressSync([Buffer.from("faucet_config"), mint.toBuffer()], faucetProgram);
+  const [mintAuthority] = web3.PublicKey.findProgramAddressSync([Buffer.from("mint_authority"), mint.toBuffer()], faucetProgram);
+  const createAta = new web3.TransactionInstruction({
+    programId: new web3.PublicKey(ASSOCIATED_TOKEN_PROGRAM),
+    keys: [
+      { pubkey: authority, isSigner: true, isWritable: true },
+      { pubkey: ata, isSigner: false, isWritable: true },
+      { pubkey: authority, isSigner: false, isWritable: false },
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: web3.SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: tokenProgram, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.from([1]), // CreateIdempotent
+  });
+  // Plain Uint8Array + DataView: the Buffer polyfill in the browser bundle has no BigInt read/write methods.
+  const bytes = new Uint8Array(16);
+  bytes.set(FAUCET_MINT_TO_USER);
+  new DataView(bytes.buffer).setBigUint64(8, amountUnits, true);
+  const data = Buffer.from(bytes);
+  const mintTo = new web3.TransactionInstruction({
+    programId: faucetProgram,
+    keys: [
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: mint, isSigner: false, isWritable: true },
+      { pubkey: ata, isSigner: false, isWritable: true },
+      { pubkey: mintAuthority, isSigner: false, isWritable: false },
+      { pubkey: tokenProgram, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+  return simulateSignSend(session, wallet, [createAta, mintTo]);
+}
+
 /** First use: create subaccount 0 and deposit dUSDT in one transaction. `amountUnits` is in 1e6 base units. */
 export async function createAccountAndDeposit(session: Session, wallet: SignerWallet, amountUnits: bigint): Promise<SentResult> {
   if (amountUnits <= 0n) throw new TradeError("Deposit must be positive", "config");
-  const { client, sdk } = session;
-  const [initIxs] = await client.getInitializeUserAccountIxs(0);
-  const ata = await client.getAssociatedTokenAccount(QUOTE_MARKET_INDEX);
-  const depositIxs = await client.getDepositTxnIx(new sdk.BN(amountUnits.toString()), QUOTE_MARKET_INDEX, ata, 0);
-  return simulateSignSend(session, wallet, [...initIxs, ...depositIxs]);
+  const init = await initializeInstructions(session);
+  const deposit = await depositInstruction(session, amountUnits, null);
+  return simulateSignSend(session, wallet, [...init, deposit]);
 }
 
 export async function depositMore(session: Session, wallet: SignerWallet, amountUnits: bigint): Promise<SentResult> {
   if (amountUnits <= 0n) throw new TradeError("Deposit must be positive", "config");
-  const { client, sdk } = session;
-  const ata = await client.getAssociatedTokenAccount(QUOTE_MARKET_INDEX);
-  const ixs = await client.getDepositTxnIx(new sdk.BN(amountUnits.toString()), QUOTE_MARKET_INDEX, ata, 0);
-  return simulateSignSend(session, wallet, ixs);
+  const user = await fetchUser(session);
+  return simulateSignSend(session, wallet, [await depositInstruction(session, amountUnits, user)]);
 }
 
 export interface OrderRequest {
@@ -160,7 +405,7 @@ export interface OrderRequest {
 }
 
 export async function placeOrder(session: Session, wallet: SignerWallet, request: OrderRequest): Promise<SentResult> {
-  const { client, sdk } = session;
+  const { sdk, core } = session;
   if (request.baseUnits <= 0n || request.priceUnits <= 0n) throw new TradeError("Size and price must be positive", "config");
   const builder = request.builder
     ? { builderIdx: request.builder.index, builderFeeTenthBps: clampBuilderFee(request.builder.feeTenthsBp) }
@@ -186,33 +431,76 @@ export async function placeOrder(session: Session, wallet: SignerWallet, request
           price,
           postOnly: request.postOnly ? sdk.PostOnlyParams.MUST_POST_ONLY : sdk.PostOnlyParams.NONE,
         });
-  const ix = await client.getPlacePerpOrderIx(params, 0);
+  const orderParams = sdk.getOrderParams(params, { marketType: sdk.MarketType.PERP });
+  const remaining = remainingAccounts(session, {
+    userAccounts: [await fetchUser(session)],
+    readablePerpMarketIndex: request.marketIndex,
+  });
+  if (request.builder) remaining.push({ pubkey: escrowAddress(session), isSigner: false, isWritable: true });
+  const ix = await sdk.VelocityCore.buildPlacePerpOrderInstruction({
+    program: core.program as never,
+    orderParams,
+    state: core.state,
+    user: userAddress(session),
+    userStats: userStatsAddress(session),
+    authority: session.authority,
+    remainingAccounts: remaining,
+  });
   return simulateSignSend(session, wallet, [ix]);
 }
 
 export async function cancelAllOnMarket(session: Session, wallet: SignerWallet, marketIndex: number): Promise<SentResult> {
-  const ix = await session.client.getCancelOrdersIx(session.sdk.MarketType.PERP, marketIndex, null, 0);
+  const { sdk, core } = session;
+  const remaining = remainingAccounts(session, {
+    userAccounts: [await fetchUser(session)],
+    readablePerpMarketIndex: marketIndex,
+  });
+  const ix = await sdk.VelocityCore.buildCancelOrdersInstruction({
+    program: core.program as never,
+    marketType: sdk.MarketType.PERP,
+    marketIndex,
+    direction: null,
+    user: userAddress(session),
+    state: core.state,
+    userStats: userStatsAddress(session),
+    authority: session.authority,
+    remainingAccounts: remaining,
+  });
   return simulateSignSend(session, wallet, [ix]);
 }
 
-/** One-time builder setup: create the user's RevenueShareEscrow and approve the builder up to `maxTenthsBp`. */
+/** One-time builder setup: create the user's RevenueShareEscrow if missing and approve the builder up to `maxTenthsBp`. */
 export async function approveBuilder(
   session: Session,
   wallet: SignerWallet,
   builder: PublicKey,
   maxTenthsBp: number,
 ): Promise<SentResult> {
+  const { web3, core, authority } = session;
   const max = clampBuilderFee(maxTenthsBp);
-  const approve = await session.client.getChangeApprovedBuilderIx(builder, max, true);
-  const escrow = await session.client.getInitializeRevenueShareEscrowIx(session.authority, ESCROW_ORDER_SLOTS);
-  try {
-    return await simulateSignSend(session, wallet, [escrow, approve]);
-  } catch (error) {
-    // The escrow may already exist from an earlier approval; simulation fails before anything is sent,
-    // so it is safe to retry with the approval alone.
-    if (error instanceof TradeError && error.code === "simulation") return simulateSignSend(session, wallet, [approve]);
-    throw error;
+  const escrow = escrowAddress(session);
+  const ixs: TransactionInstruction[] = [];
+  if (!(await accountExists(session, escrow))) {
+    ixs.push(
+      core.program.instruction.initializeRevenueShareEscrow(ESCROW_ORDER_SLOTS, {
+        accounts: {
+          escrow,
+          authority,
+          payer: authority,
+          userStats: userStatsAddress(session),
+          state: core.state,
+          rent: web3.SYSVAR_RENT_PUBKEY,
+          systemProgram: web3.SystemProgram.programId,
+        },
+      }),
+    );
   }
+  ixs.push(
+    core.program.instruction.changeApprovedBuilder(builder, max, true, {
+      accounts: { escrow, authority, payer: authority, systemProgram: web3.SystemProgram.programId },
+    }),
+  );
+  return simulateSignSend(session, wallet, ixs);
 }
 
 /**
@@ -220,9 +508,9 @@ export async function approveBuilder(
  * Refuse to trade unless the devnet market at that index carries the same symbol name.
  */
 export function devnetMarketName(session: Session, marketIndex: number): string | null {
-  const account = session.client.getPerpMarketAccount(marketIndex);
+  const account = session.core.perpMarkets.get(marketIndex);
   if (!account) return null;
-  return session.sdk.decodeName(account.name).trim();
+  return session.sdk.decodeName(account.name as number[]).trim();
 }
 
 export function devnetMarketMatches(session: Session, marketIndex: number, symbol: string): boolean {
@@ -240,12 +528,13 @@ export async function findApprovedBuilderIndex(
   builder: PublicKey,
   minMaxTenthsBp: number,
 ): Promise<number | null> {
-  const { client, sdk } = session;
-  const address = sdk.getRevenueShareEscrowAccountPublicKey(client.program.programId, session.authority);
-  const escrow = (await client.program.account.revenueShareEscrow.fetchNullable(address)) as
-    | { approvedBuilders: { authority: PublicKey; maxFeeTenthBps: number }[] }
-    | null;
-  if (!escrow) return null;
-  const index = escrow.approvedBuilders.findIndex((b) => b.authority.equals(builder) && b.maxFeeTenthBps >= minMaxTenthsBp && b.maxFeeTenthBps > 0);
+  const info = await session.connection.getAccountInfo(escrowAddress(session), "confirmed");
+  if (!info) return null;
+  const escrow = session.core.program.coder.accounts.decode<{
+    approvedBuilders: { authority: PublicKey; maxFeeTenthBps: number }[];
+  }>("revenueShareEscrow", info.data as never);
+  const index = escrow.approvedBuilders.findIndex(
+    (b) => b.authority.equals(builder) && b.maxFeeTenthBps >= minMaxTenthsBp && b.maxFeeTenthBps > 0,
+  );
   return index >= 0 ? index : null;
 }
