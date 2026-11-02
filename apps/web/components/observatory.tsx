@@ -149,8 +149,17 @@ function Empty({
 }
 
 export function Observatory({ page, slug }: { page: string; slug?: string }) {
-  const { data, loading, error, feed, refresh, openWallet, address } =
-    useObservatory();
+  const {
+    data,
+    loading,
+    error,
+    feed,
+    refresh,
+    openWallet,
+    address,
+    walletAddress,
+  } = useObservatory();
+  const shownAddress = address ?? walletAddress;
   const [search, setSearch] = useState("");
   const [help, setHelp] = useState(false);
   const [healthOpen, setHealthOpen] = useState(false);
@@ -225,8 +234,8 @@ export function Observatory({ page, slug }: { page: string; slug?: string }) {
           </span>
           <button className="wallet-button" onClick={openWallet}>
             <Wallet size={14} />
-            {address
-              ? `${address.slice(0, 4)}…${address.slice(-4)}`
+            {shownAddress
+              ? `${shownAddress.slice(0, 4)}…${shownAddress.slice(-4)}`
               : "Connect Wallet"}
           </button>
           <button

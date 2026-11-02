@@ -107,6 +107,8 @@ type Context = {
   refresh: () => Promise<void>;
   openWallet: () => void;
   address: string | null;
+  /** Connected wallet's public key. Unlike `address`, it does not need a research-session sign-in. */
+  walletAddress: string | null;
   watched: string[];
   toggleWatch: (id: string) => Promise<void>;
   notify: (message: string) => void;
@@ -286,6 +288,7 @@ function DataProvider({ children }: { children: React.ReactNode }) {
         refresh,
         openWallet: () => setWalletOpen(true),
         address,
+        walletAddress: wallet.publicKey?.toBase58() ?? null,
         watched,
         toggleWatch,
         notify: setToast,
