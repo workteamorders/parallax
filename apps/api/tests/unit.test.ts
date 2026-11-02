@@ -3,7 +3,7 @@ import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 import { parsePerps, parsePrediction, parseCandles, microPrice } from '../src/providers.js';
 import { orient, executableSpread, equivalent, consensus, divergence, rulesHash, rulesDiff, type PairedSample } from '../src/analytics.js';
-import { builderFee, geoDecision, trading } from '../src/config.js';
+import { builderFee, geoDecision, trading, tradingStatus } from '../src/config.js';
 import { verifyWalletSignature } from '../src/auth.js';
 import { closeConnections } from '../src/db.js';
 import { manifest } from '../src/theme-manifest.js';
@@ -155,6 +155,12 @@ describe('execution and identity safety', () => {
     expect([builderFee(-1), builderFee(-0.1), builderFee(0.9), builderFee(20.9), builderFee(99.9), builderFee(1001), builderFee(NaN), builderFee(Infinity), builderFee(-Infinity)])
       .toEqual([0, 0, 0, 20, 99, 100, 20, 20, 20]);
     expect(trading.enabled).toBe(false);
+  });
+  it('enables browser devnet trading only on devnet with the explicit flag, never on mainnet', () => {
+    expect(tradingStatus('devnet', 'false', 20).enabled).toBe(false);
+    expect(tradingStatus('devnet', 'true', 20)).toMatchObject({ enabled: true, network: 'devnet', builderFeeTenthsBp: 20 });
+    expect(tradingStatus('mainnet-beta', 'true', 20)).toMatchObject({ enabled: false, network: 'mainnet-beta' });
+    expect(tradingStatus('mainnet-beta', 'false', 20).enabled).toBe(false);
   });
   it('fails closed on untrusted or absent location and restricted countries', () => {
     expect(geoDecision('US', true).allowed).toBe(false);

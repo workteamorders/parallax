@@ -1,0 +1,11 @@
+**/node_modules
+**/.next
+**/dist
+**/test-results
+**/playwright-report
+**/*.log
+**/.env*
+!**/.env.example
+.git
+hyperliquid
+apps/web

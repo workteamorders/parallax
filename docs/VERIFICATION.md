@@ -66,3 +66,13 @@ Commercial-data permissions, complete geographic policies, authenticated product
 - Supply a Telegram bot token only after secure linking and delivery have been implemented. Setting a token alone cannot enable the current build.
 
 Never send a wallet private key or seed phrase to this server.
+
+## Devnet Trading and Deploy Revision (verified in a cloud workspace, 2026-11-01)
+
+Run there: `pnpm typecheck`, `pnpm lint`, `pnpm test` (see counts in the final report), `pnpm build`; the production web build loaded the Velocity SDK in Chromium and rendered the devnet panel with no CSP errors against a mock API; the API and worker ran with production settings against local Postgres 16 and Redis. Read-only devnet RPC checks (program and dUSDT mint exist) were done through the owner's browser.
+
+Not done: any signed devnet transaction, Playwright e2e against live data, the Docker image build, live Jupiter/Velocity ingestion from the workspace. See `docs/DEVNET-TRADING.md` and `docs/DEPLOY.md`.
+
+## Live-only mode (verified in a cloud workspace, 2026-11-01)
+
+Web unit tests (20) cover: all sources failing (no quote, no approved theme, honest health), manifest verification (a contract whose rules differ from the reviewed fingerprint cannot stay approved), rejected/expired contracts never fetched, env-driven trading flag (never mainnet), candle input validation before any network call, candle success/404, history empty/404. The production build ran in live mode and was exercised over HTTP and in Chromium with the upstream hosts unreachable: the pages render, every route answers as designed, there were no console errors. NOT verified: the success path against the real Jupiter and Velocity services, and Vercel itself.

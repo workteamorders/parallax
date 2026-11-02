@@ -4262,3 +4262,15 @@ dd {
     transform: rotate(-70deg);
   }
 }
+
+.devnet-ticket {
+  margin-top: 22px;
+  max-width: 520px;
+}
+.devnet-ticket .button.full {
+  margin: 10px 16px 0;
+  width: calc(100% - 32px);
+}
+.devnet-ticket .reference-preview p {
+  overflow-wrap: anywhere;
+}

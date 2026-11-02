@@ -3,7 +3,7 @@
 ## Scope and Safety
 
 - All project files live in the Parallax workspace. Reference projects were read only. No environment file was opened, copied, or used as a template; only placeholder `.env.example` files were created. No wallet private key is held by the application.
-- Trading is hard-coded disabled in `config.ts`; `/trade` always returns 403. There is no hidden enable switch or order SDK dependency. No signing, simulation, builder registration, collateral transfer, or order placement was exercised.
+- The server never trades: `/trade` always returns 403 and no key is held. (Browser-side devnet test trading is a separate, flag-gated capability, see "Devnet Test Trading" below.) There is no hidden enable switch or order SDK dependency. No signing, simulation, builder registration, collateral transfer, or order placement was exercised.
 - Velocity documentation identifies SDK version 0.27.0, but the SDK is intentionally not installed because signing/execution has not been safely validated. Public data access does not establish the correctness of a transaction integration.
 - Velocity is cross-margin **within a subaccount**, not isolated margin. Mainnet collateral is USDT; devnet collateral is dUSDT. A devnet execution preference does not turn the public market data feed into a devnet quote source. Current public Velocity market quotes identify USDT.
 - Builder fees are denominated in tenths of a basis point. Protocol ceiling: 1,000; stricter application ceiling: 100; default: 20 (2 bps). Clamp math is tested, but no builder fee is charged because execution is disabled.
@@ -118,3 +118,26 @@ The owner rejected visual similarity to Theorem and then approved a larger surre
 - The event atlas replaces plates with a quiet, searchable editorial index. Selection updates the visible event, its real probability, linked perp and source annotations. Watchlist and asset filtering, previous/next, keyboard selection, inspection links and a table alternative remain functional. Selecting a contract never requests a wallet transaction signature.
 - Artwork still renders during an API outage, but no quote, contract, price history or signal is substituted. Real history remains in a separate analysis section with independent scales. Research and execution forms stay visually stable.
 - The visual regression suite now checks actual available reviewed data rather than requiring the historical seed to remain unexpired forever. Original coverage is not claimed by that test: the live call during this revision returned 16 approved contracts after natural expiries. Expanding/re-reviewing current coverage is a distinct remaining requirement; no review status was altered to satisfy a UI test.
+
+## Devnet Test Trading (Current Revision)
+
+The owner chose to keep the Solana project and asked for devnet trading plus a Vercel deploy that shows data. Decisions:
+
+- Signing stays in the user's own wallet in the browser. The API gained one flag, `DEVNET_TRADING_ENABLED` (default false), which only controls whether `/terminal` reports `trading.enabled`; it is ignored on mainnet-beta, and `/trade` remains 403. This supersedes the earlier "hard-coded disabled" setting for devnet only; mainnet stays disabled in code.
+- `@velocity-exchange/sdk` 0.27.0 is now a web dependency, loaded lazily. The Velocity migration page still says 0.20.0; the npm registry lists 0.27.0 as latest (checked 2026-10-31), which is what is installed. The SDK's browser build imports `fs`/`net`/`tls`, so `next.config.ts` aliases them to an empty module for the browser; this was needed for the build to pass.
+- The CSP `connect-src` now also allows the configured devnet RPC (https and wss), derived from `NEXT_PUBLIC_SOLANA_RPC_URL`.
+- Every flow simulates first and refuses a non-devnet RPC. The mainnet-data market index is verified against the devnet market name before ordering. Market orders use the worst-price cap as both `price` and `auctionEndPrice`, which is an unverified interpretation of the SDK's market-order parameters.
+- Builder fee is opt-in via `NEXT_PUBLIC_BUILDER_ADDRESS` (none exists yet), clamped to the app ceiling of 100 tenths of a bp.
+- pnpm `allowBuilds` now lists `bigint-buffer` and `protobufjs` as false (their install scripts are skipped), matching the existing policy for other optional native modules.
+- Backend hosting artifacts were added (`Dockerfile`, `PORT` support, `start` script, `docs/DEPLOY.md`). The image itself was not built in this workspace.
+- Next.js was raised from 16.4.0 to 16.4.3 (and `eslint-config-next` to match). With 16.4.0 the build tooling stopped the first `next build` with a known-vulnerability notice and only passed on retry, which would fail a single-run Vercel build. Three consecutive clean builds pass on 16.4.3 with no notice.
+
+## Live-only mode for the devnet stage
+
+The owner asked to stay off paid hosting while on devnet and to confirm everything works first. `PARALLAX_LIVE_MODE=1` makes the web app's `/api/*` proxy answer `terminal`, `health`, `candles`, `themes/*/history` and `auth/session` itself, with no API, worker, Postgres or Redis. Decisions:
+
+- The same parsers (`providers-core.ts`, extracted unchanged from `providers.ts`) and the same manifest checks as the seed are used: a contract is approved only if its live title, expiry, open time and rules hash match the reviewed fingerprint during that refresh; otherwise it is a candidate with no quote. Rejected and expired contracts are never fetched. If a check fails, the theme is a candidate, never approved from stale memory.
+- No storage means no history, signals, sessions, watchlists or alerts. History is an empty (valid) array, signals are empty, and write routes return 501. The status bar and health list say so. Nothing is simulated to fill the gap.
+- To let the web app import the manifest and parsers, the API's TypeScript resolution moved from NodeNext to Bundler and `theme-manifest.ts` imports were made extension-less, because Turbopack does not rewrite `.js` imports to `.ts`. `trading-status.ts` was split out of `config.ts` so the web app can use it without parsing server env.
+- `NEXT_PUBLIC_FEED_URL=off` disables the browser WebSocket (there is no feed) and the label then reads "Refreshing every 30s".
+- Per-instance single-flight caching of the assembled terminal (30 s) plus platform fetch caching (30 s Velocity, 60 s Jupiter) bounds upstream traffic. Jupiter contract checks run three at a time with one retry on 429. This pacing is weaker than the full mode's global 2.2 s Redis slot and has not been tested against the real rate limit.

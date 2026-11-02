@@ -1,5 +1,5 @@
-import { reviewedEvidence } from './data/reviewed.js';
-import { rulesHash } from './analytics.js';
+import { reviewedEvidence } from './data/reviewed';
+import { rulesHash } from './analytics';
 
 export interface ReviewedTheme {
   marketId: string; slug: string; title: string; marketTitle: string; closeTime: number;

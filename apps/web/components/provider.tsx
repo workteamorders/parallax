@@ -7,6 +7,7 @@ import {
   useEffectEvent,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { WalletProvider, useWallet } from "@solana/wallet-adapter-react";
 import { WalletReadyState } from "@solana/wallet-adapter-base";
@@ -181,7 +182,8 @@ function DataProvider({ children }: { children: React.ReactNode }) {
       retry: ReturnType<typeof setTimeout> | undefined,
       stopped = false;
     function connect() {
-      if (stopped) return;
+      // NEXT_PUBLIC_FEED_URL=off: live-only hosting has no feed; the 30 s refresh above keeps data current.
+      if (stopped || process.env.NEXT_PUBLIC_FEED_URL === "off") return;
       socket = new WebSocket(
         process.env.NEXT_PUBLIC_FEED_URL ?? "ws://127.0.0.1:4100/feed",
       );
@@ -355,19 +357,31 @@ function WalletDialog({
         body: JSON.stringify({ address, nonce: challenge.nonce, signature }),
       });
       await onSignIn(address);
-    } catch {
+    } catch (caught) {
       setError(
-        "Sign-in was declined or the session could not be verified. No transaction was submitted.",
+        caught instanceof Error &&
+          caught.message.startsWith("Not available in live-only mode")
+          ? "Sign-in needs the database, which live-only mode does not have. Your wallet is connected, and the devnet trading panel does not need a sign-in."
+          : "Sign-in was declined or the session could not be verified. No transaction was submitted.",
       );
     } finally {
       setBusy(false);
     }
   }
-  const installed = wallet.wallets.filter(
-    (w) =>
-      w.readyState === WalletReadyState.Installed ||
-      w.readyState === WalletReadyState.Loadable,
+  // Wallet Standard extensions exist only in the browser. Rendering them on the first client pass would not
+  // match the server HTML (hydration error), so the list is empty until hydration has finished.
+  const hydrated = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
   );
+  const installed = hydrated
+    ? wallet.wallets.filter(
+        (w) =>
+          w.readyState === WalletReadyState.Installed ||
+          w.readyState === WalletReadyState.Loadable,
+      )
+    : [];
   return (
     <dialog
       ref={ref}

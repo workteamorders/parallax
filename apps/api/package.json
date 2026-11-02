@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
     "worker": "tsx src/worker.ts",
     "seed:themes": "tsx src/review.ts seed",
     "review:themes": "tsx src/review.ts",

@@ -34,6 +34,7 @@ import {
 import type { Candle, Perp, Theme, ThemeHistory } from "@parallax/shared";
 import { useObservatory, request } from "./provider";
 import { RiftExplorer } from "./rift-explorer";
+import { DevnetTicket } from "./devnet-ticket";
 import {
   linePath,
   number,
@@ -381,7 +382,11 @@ export function Observatory({ page, slug }: { page: string; slug?: string }) {
             <span
               className={`status-dot ${feed === "connected" ? "" : "amber"}`}
             />
-            {feed === "connected" ? "Feed connected" : "Feed reconnecting"}
+            {process.env.NEXT_PUBLIC_FEED_URL === "off"
+              ? "Refreshing every 30s"
+              : feed === "connected"
+                ? "Feed connected"
+                : "Feed reconnecting"}
           </button>
           <span className="statusbar-separator" />
           <span>
@@ -393,7 +398,7 @@ export function Observatory({ page, slug }: { page: string; slug?: string }) {
           </span>
           <span className="statusbar-right">
             {data
-              ? `Last ingestion ${time(data.capturedAt)} UTC`
+              ? `${process.env.NEXT_PUBLIC_FEED_URL === "off" ? "Live fetch" : "Last ingestion"} ${time(data.capturedAt)} UTC`
               : "Awaiting ingestion"}
             <span className="statusbar-separator" />
             READ-ONLY
@@ -623,7 +628,9 @@ function SignalSummary() {
       <p>
         {data?.signals.length
           ? "Inspect the probability movement and perp response behind each observation."
-          : "Collecting actual odds and price history. Signals appear only when the evidence is sufficient."}
+          : process.env.NEXT_PUBLIC_FEED_URL === "off"
+            ? "Live-only mode stores no odds or price history, so no signals are computed. Run the full backend to collect history."
+            : "Collecting actual odds and price history. Signals appear only when the evidence is sufficient."}
       </p>
       <div className="signal-legend">
         <div>
@@ -1091,7 +1098,11 @@ function ThemeTable({
                       {t.reviewStatus === "approved" ? (
                         <>
                           <span className="tiny-dot" />{" "}
-                          {m?.yesMid == null ? "No fresh quote" : "Collecting"}
+                          {m?.yesMid == null
+                            ? "No fresh quote"
+                            : process.env.NEXT_PUBLIC_FEED_URL === "off"
+                              ? "Live quote"
+                              : "Collecting"}
                         </>
                       ) : (
                         "Unverified"
@@ -1316,6 +1327,9 @@ function ThemePage({ theme }: { theme: Theme }) {
         </section>
         <TradePanel perp={perp} />
       </div>
+      {data?.trading.enabled && data.trading.network === "devnet" && (
+        <DevnetTicket perp={perp} />
+      )}
       <section className="panel rules-panel">
         <div className="detail-tabs">
           {["Resolution Rules", "Signal History", "Mapping Review"].map((t) => (
@@ -1560,8 +1574,12 @@ function TradePanel({ perp }: { perp?: Perp }) {
       <div className="trade-lock">
         <LockKeyhole size={14} />
         <p>
-          <strong>Execution is locked.</strong>No wallet signature or order
-          submission. Devnet signing has not been verified end to end.
+          <strong>
+            {data?.trading.enabled ? "Reference only." : "Execution is locked."}
+          </strong>
+          {data?.trading.enabled
+            ? "This panel never signs. Devnet test trading is in its own panel below, and has not been verified end to end."
+            : "No wallet signature or order submission. Devnet signing has not been verified end to end."}
         </p>
       </div>
       <p className="margin-disclosure">
