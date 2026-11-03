@@ -1,8 +1,8 @@
 # Devnet test trading
 
-Status: implemented and checked against the real devnet program by **simulation**. No transaction has been
-signed or sent from this code: simulation needs no signature, and only the owner's funded wallet can do the
-real sign-and-send. See "What was and was not checked".
+Status: implemented, checked against the real devnet program by simulation, and **exercised once end to end by the
+owner on 2026-11-03** with Phantom (Testnet Mode, Solana Devnet) on the deployed Vercel site. See "What was and was
+not checked".
 
 ## How it works
 
@@ -45,9 +45,24 @@ Checked against the real devnet deployment (read through the owner's browser):
   production bundle opens a session, reads the market and balance and reaches the wallet prompt in Chromium
   with a fake wallet and a mocked RPC.
 
-Not checked: any transaction signed by a real wallet and confirmed on chain; the builder-code path against the
-real program (only encoded and compared offline); withdrawals (not implemented); fills, funding, margin
-behavior and liquidation; wallet-extension signing in Phantom.
+Exercised by the owner on 2026-11-03 (Phantom, devnet, the deployed site; the panel reported each as confirmed
+on devnet and showed its signature):
+1. "Get 100 test dUSDT": wallet dUSDT went from 0 to 100.
+2. "Create account and deposit" 10: the Velocity account changed from "Not created yet" to "Created" and wallet
+   dUSDT went from 100 to 90.
+3. Long market 0.001 BTC and 4. Short market 0.001 BTC: both confirmed.
+5. "Cancel all orders on this market": confirmed.
+A first order attempt showed "User rejected the request" because the wallet prompt was declined; nothing was sent.
+The owner did not look the transactions up in an explorer in this session, and the panel does not show positions,
+so whether the market orders filled, and the resulting position, is not verified.
+
+MetaMask: its Solana network list offered Mainnet only (no Devnet, with "Show test networks" on), so its signing
+prompt said "Solana Mainnet" and its own simulation reverted. The app cannot choose the network for the wallet:
+`signTransaction` receives no chain. Use a wallet that can be switched to devnet (Phantom Testnet Mode worked). Do
+not approve a prompt that says Mainnet.
+
+Not checked: the builder-code path against the real program (only encoded and compared offline); withdrawals (not
+implemented); a position view, fills, funding, margin behavior and liquidation; other wallets; limit orders.
 
 ## Owner checklist
 

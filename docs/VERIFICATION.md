@@ -52,7 +52,7 @@ Counts increase as the worker runs; approval can downgrade on actual expiry/rule
 
 ## Not Verified or Implemented
 
-The original full execution Definition of Done is **not met**. No blockchain order, cancellation or builder approval was implemented or exercised, and no funded wallet was used. Portfolio subaccount reconciliation, deposits, withdrawals and leverage are unavailable. Research-signature integration tests are not order-signing tests.
+The original full execution Definition of Done is **not met**. On devnet (not mainnet), the owner has since exercised faucet, account creation, deposit, market orders and cancel from the browser with Phantom (see "Devnet trades by the owner"); builder approval was not exercised. Portfolio subaccount reconciliation, deposits, withdrawals and leverage are unavailable. Research-signature integration tests are not order-signing tests.
 
 No Kalshi equivalent is seeded; there is no valid two-venue spread to display. Prediction quotes use Polymarket provenance via Jupiter, while direct Gamma/Kalshi calls currently verify connectivity only. External provider WebSocket ingestion, Telegram linking/delivery, spread/mismatch/divergence alert types and an LLM provider are not implemented. Seven-day odds history is accumulated, not fabricated; signals remain empty during baseline warmup.
 
@@ -71,7 +71,13 @@ Never send a wallet private key or seed phrase to this server.
 
 Run there: `pnpm typecheck`, `pnpm lint`, `pnpm test` (see counts in the final report), `pnpm build`; the production web build loaded the Velocity SDK in Chromium and rendered the devnet panel with no CSP errors against a mock API; the API and worker ran with production settings against local Postgres 16 and Redis. Read-only devnet RPC checks (program and dUSDT mint exist) were done through the owner's browser.
 
-Not done: any signed devnet transaction, Playwright e2e against live data, the Docker image build, live Jupiter/Velocity ingestion from the workspace. See `docs/DEVNET-TRADING.md` and `docs/DEPLOY.md`.
+Not done in the workspace: Playwright e2e against live data, the Docker image build, live Jupiter/Velocity ingestion. The devnet transactions were later done by the owner, see "Devnet trades by the owner" below. See `docs/DEVNET-TRADING.md` and `docs/DEPLOY.md`.
+
+## Devnet trades by the owner (2026-11-03)
+
+On the deployed Vercel site (live-only mode, devnet trading enabled), the owner connected Phantom (Testnet Mode, Solana Devnet) and ran, each reported by the panel as confirmed on devnet: dUSDT faucet mint (0 to 100), create Velocity account plus 10 dUSDT deposit (wallet 100 to 90, account "Created"), Long market 0.001 BTC, Short market 0.001 BTC, and cancel all orders. Details and limits are in `docs/DEVNET-TRADING.md`.
+
+Not verified: whether the market orders filled and what position resulted (the panel shows no position; no explorer check was recorded), the builder-code path on chain, withdrawals (not implemented), limit orders, wallets other than Phantom. MetaMask offered no Solana Devnet here and cannot be used for this. The header wallet button now shows the connected wallet address even without a research sign-in (sign-in still needs the database).
 
 ## Live-only mode (verified in a cloud workspace, 2026-11-01)
 
