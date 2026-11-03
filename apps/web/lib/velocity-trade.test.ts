@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as web3 from "@solana/web3.js";
 import {
   cancelAllOnMarket,
+  closePosition,
   createAccountAndDeposit,
   depositMore,
   devnetMarketMatches,
@@ -11,6 +12,8 @@ import {
   loadCore,
   mintTestQuote,
   placeOrder,
+  readAccountSummary,
+  spotTokenUnits,
   TOKEN_FAUCET_PROGRAM,
   approveBuilder,
   TradeError,
@@ -55,7 +58,7 @@ async function loadCoreWith() {
   const nameBytes = sdk.encodeName("BTC-PERP");
   const data = new Map<string, Buffer>();
   data.set(statePk.toBase58(), await account(shell, "state", {}));
-  data.set(spot0.toBase58(), await account(shell, "spotMarket", { mint, vault, oracle }));
+  data.set(spot0.toBase58(), await account(shell, "spotMarket", { mint, vault, oracle, cumulativeDepositInterest: new sdk.BN("10000000000") }));
   data.set(perp1.toBase58(), await account(shell, "perpMarket", { name: nameBytes, oracle, quoteSpotMarketIndex: 0 }));
   return { shell, programId, data, statePk, spot0, perp1 };
 }
@@ -265,5 +268,66 @@ describe("velocity trade session (offline, fake RPC)", () => {
       const source = readFileSync(new URL(file, import.meta.url), "utf8");
       expect(source).not.toMatch(/\b(read|write)Big(U)?Int64(LE|BE)\b/i);
     }
+  });
+
+  it("converts scaled spot balances to token units", () => {
+    // 10 dUSDT: scaled 10e9, interest index 1.0 (1e10) -> 10_000_000 base units (6 decimals).
+    expect(spotTokenUnits(10_000_000_000n, 10_000_000_000n, 6)).toBe(10_000_000n);
+    // Interest index 1.05 raises the claim by 5 percent.
+    expect(spotTokenUnits(10_000_000_000n, 10_500_000_000n, 6)).toBe(10_500_000n);
+    expect(spotTokenUnits(0n, 10_000_000_000n, 6)).toBe(0n);
+  });
+
+  /** A user account with 10 dUSDT of collateral and a short 0.001 BTC position on market 1. */
+  async function userWithPosition(base: bigint) {
+    const f = await loadCoreWith();
+    const BN = sdk.BN;
+    const blank = f.shell.coder.accounts.decode<Record<string, unknown>>("user", zeroAccount(f.shell, "user") as never) as {
+      spotPositions: Record<string, unknown>[];
+      perpPositions: Record<string, unknown>[];
+    };
+    const spotPositions = blank.spotPositions.map((p, i) =>
+      i === 0 ? { ...p, marketIndex: 0, balanceType: { deposit: {} }, scaledBalance: new BN("10000000000") } : p,
+    );
+    const perpPositions = blank.perpPositions.map((p, i) =>
+      i === 0
+        ? { ...p, marketIndex: 1, baseAssetAmount: new BN(base.toString()), quoteEntryAmount: new BN("76000"), openOrders: 0 }
+        : p,
+    );
+    const bytes = await account(f.shell, "user", { spotPositions, perpPositions });
+    const userPk = sdk.VelocityCore.pdas.getUserAccountPublicKeySync(f.programId, authority, 0);
+    return session(new Map([[userPk.toBase58(), { data: Buffer.from(bytes), owner: f.programId }]]));
+  }
+
+  it("reads collateral and perp positions from the user account", async () => {
+    const { s } = await userWithPosition(-1_000_000n);
+    const summary = await readAccountSummary(s);
+    expect(summary).not.toBeNull();
+    expect(summary!.collateralUnits).toBe(10_000_000n); // the test spot market has interest index 1.0 (1e10)
+    expect(summary!.positions).toEqual([{ marketIndex: 1, baseUnits: -1_000_000n, entryQuoteUnits: 76_000n, openOrders: 0 }]);
+  });
+
+  it("returns null when the Velocity account does not exist", async () => {
+    const { s } = await session();
+    expect(await readAccountSummary(s)).toBeNull();
+  });
+
+  it("closes a short with a reduce-only long order and refuses to close more than is held", async () => {
+    const { s, sent } = await userWithPosition(-1_000_000n);
+    const position = { marketIndex: 1, baseUnits: -1_000_000n };
+    await expect(closePosition(s, declining, position, 1_000_000n, 77_500_000_000n)).rejects.toMatchObject({ code: "rejected" });
+    expect(sent).toHaveLength(1); // simulated once, then the wallet declined
+    const ix = sent[0]!.message.compiledInstructions.at(-1)!;
+    const decoded = s.core.program.coder.instruction.decode(Buffer.from(ix.data)) as unknown as {
+      name: string;
+      data: { params: { direction: object; reduceOnly: boolean; baseAssetAmount: { toString(): string } } };
+    };
+    expect(decoded.name).toBe("placePerpOrder");
+    expect(decoded.data.params.reduceOnly).toBe(true);
+    expect("long" in decoded.data.params.direction).toBe(true);
+    expect(decoded.data.params.baseAssetAmount.toString()).toBe("1000000");
+    await expect(closePosition(s, declining, position, 2_000_000n, 77_500_000_000n)).rejects.toBeInstanceOf(TradeError);
+    await expect(closePosition(s, declining, position, 0n, 77_500_000_000n)).rejects.toBeInstanceOf(TradeError);
+    await expect(closePosition(s, declining, { marketIndex: 1, baseUnits: 0n }, 1n, 1n)).rejects.toThrow(/no open position/);
   });
 });

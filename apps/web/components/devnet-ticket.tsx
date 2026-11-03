@@ -19,6 +19,7 @@ import {
   TradeError,
   approveBuilder,
   cancelAllOnMarket,
+  closePosition,
   createAccountAndDeposit,
   depositMore,
   devnetMarketMatches,
@@ -28,7 +29,9 @@ import {
   mintTestQuote,
   openSession,
   placeOrder,
+  readAccountSummary,
   walletQuoteBalance,
+  type AccountSummary,
   type Session,
   type SignerWallet,
 } from "@/lib/velocity-trade";
@@ -41,7 +44,10 @@ const unitsToDecimal = (units: bigint, decimals: number) => {
   return `${text.slice(0, -decimals)}.${text.slice(-decimals)}`.replace(/\.?0+$/, "");
 };
 
-type Notice = { tone: "ok" | "error"; text: string; logs?: string[] } | null;
+const signedUnitsToDecimal = (units: bigint, decimals: number) =>
+  `${units < 0n ? "-" : ""}${unitsToDecimal(units < 0n ? -units : units, decimals) || "0"}`;
+
+type Notice ={ tone: "ok" | "error"; text: string; logs?: string[] } | null;
 
 export function DevnetTicket({ perp }: { perp?: Perp }) {
   const { data } = useObservatory();
@@ -52,6 +58,7 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
   const [notice, setNotice] = useState<Notice>(null);
   const [account, setAccount] = useState<boolean | null>(null);
   const [balance, setBalance] = useState<bigint | null>(null);
+  const [summary, setSummary] = useState<AccountSummary | null>(null);
   const [side, setSide] = useState<Side>("Long");
   const [kind, setKind] = useState<"market" | "limit">("market");
   const [size, setSize] = useState("");
@@ -82,15 +89,17 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
       setSession(null);
       setAccount(null);
       setBalance(null);
+      setSummary(null);
       if (current) void current.close().catch(() => undefined);
     };
   }, [walletKey]);
 
   const refresh = useCallback(
     async (s: Session) => {
-      const [exists, bal] = await Promise.all([hasUserAccount(s), walletQuoteBalance(s)]);
+      const [exists, bal, sum] = await Promise.all([hasUserAccount(s), walletQuoteBalance(s), readAccountSummary(s)]);
       setAccount(exists);
       setBalance(bal);
+      setSummary(sum);
       if (BUILDER_ADDRESS && exists) {
         const { PublicKey } = await import("@solana/web3.js");
         setBuilderIndex(await findApprovedBuilderIndex(s, new PublicKey(BUILDER_ADDRESS), feeTenthsBp));
@@ -136,10 +145,26 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
     Boolean(session && signer && perp && account && marketOk && sizeUnits && priceUnits && !busy) &&
     (!useBuilder || builderIndex !== null);
 
+  const position = perp ? summary?.positions.find((p) => p.marketIndex === perp.marketIndex) ?? null : null;
+  const positionAbs = position ? (position.baseUnits < 0n ? -position.baseUnits : position.baseUnits) : 0n;
+  const entryPrice =
+    position && positionAbs > 0n ? Number(position.entryQuoteUnits < 0n ? -position.entryQuoteUnits : position.entryQuoteUnits) / 1e6 / (Number(positionAbs) / 1e9) : null;
+  const closeSide: Side = position && position.baseUnits > 0n ? "Short" : "Long";
+  const closeWorst = perp ? worstPriceUnits(perp.mark, closeSide, Number(slippage)) : null;
+  const canClose = Boolean(session && signer && perp && marketOk && position && positionAbs > 0n && closeWorst && !busy);
+
+  const submitClose = () =>
+    run(`Close ${unitsToDecimal(positionAbs, 9)} ${perp?.baseAsset ?? ""}`, async () => {
+      if (!session || !signer || !position || !closeWorst) throw new TradeError("There is no open position to close", "config");
+      const result = await closePosition(session, signer, position, positionAbs, closeWorst);
+      await refresh(session);
+      return result;
+    });
+
   const submitOrder = () =>
     run(`${side} ${size} ${perp?.baseAsset ?? ""}`, async () => {
       if (!session || !signer || !perp || !sizeUnits || !priceUnits) throw new TradeError("Order is incomplete", "config");
-      return placeOrder(session, signer, {
+      const result = await placeOrder(session, signer, {
         marketIndex: perp.marketIndex,
         side,
         baseUnits: sizeUnits,
@@ -148,6 +173,8 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
         postOnly: kind === "limit" && postOnly,
         builder: useBuilder && builderIndex !== null ? { index: builderIndex, feeTenthsBp: feeTenthsBp } : undefined,
       });
+      await refresh(session);
+      return result;
     });
 
   return (
@@ -191,6 +218,22 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
               <dt>Velocity account</dt>
               <dd>{account === null ? "--" : account ? "Created" : "Not created yet"}</dd>
             </div>
+            {summary && (
+              <div>
+                <dt>Account collateral</dt>
+                <dd>{signedUnitsToDecimal(summary.collateralUnits, 6)} dUSDT</dd>
+              </div>
+            )}
+            {summary && (
+              <div>
+                <dt>Position on this market</dt>
+                <dd>
+                  {position
+                    ? `${position.baseUnits > 0n ? "Long" : position.baseUnits < 0n ? "Short" : "Flat"} ${unitsToDecimal(positionAbs, 9) || "0"} ${perp?.baseAsset ?? ""}${entryPrice ? `, entry about ${usd(entryPrice)}` : ""}${position.openOrders ? `, ${position.openOrders} open order(s)` : ""}`
+                    : "None"}
+                </dd>
+              </div>
+            )}
           </dl>
 
           {session.core.faucet && (
@@ -315,11 +358,18 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
             onClick={() =>
               run("Cancel all orders", async () => {
                 if (!signer || !perp) throw new TradeError("No market", "config");
-                return cancelAllOnMarket(session, signer, perp.marketIndex);
+                const result = await cancelAllOnMarket(session, signer, perp.marketIndex);
+                await refresh(session);
+                return result;
               })
             }
           >
             Cancel all orders on this market
+          </button>
+          <button className="button full" disabled={!canClose} onClick={submitClose}>
+            {position && positionAbs > 0n
+              ? `Close position (${closeSide === "Short" ? "sell" : "buy"} ${unitsToDecimal(positionAbs, 9)} ${perp?.baseAsset ?? ""}, reduce only)`
+              : "Close position (no open position)"}
           </button>
         </>
       )}
@@ -335,8 +385,9 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
       )}
       <p className="margin-disclosure">
         Velocity uses cross-margin within each subaccount. Devnet quotes, fees and oracle prices can differ from the
-        mainnet figures shown elsewhere on this page. Nothing here has been run against a funded devnet wallet by the
-        developer; review each simulation before signing.
+        mainnet figures shown elsewhere on this page. The owner ran faucet, deposit, market orders and cancel on
+        devnet with Phantom; the reduce-only close and the position view are new and unproven on chain. Review each
+        wallet prompt and check that it says Devnet before signing.
       </p>
     </section>
   );

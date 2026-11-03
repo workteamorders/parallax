@@ -140,7 +140,7 @@ export function ObservatoryProvider({
   children: React.ReactNode;
 }) {
   return (
-    <WalletProvider wallets={[]} autoConnect={false}>
+    <WalletProvider wallets={[]} autoConnect>
       <DataProvider>{children}</DataProvider>
     </WalletProvider>
   );
@@ -461,6 +461,7 @@ function WalletDialog({
           {wallet.wallet && (
             <button
               className="button primary full"
+              disabled={wallet.connecting}
               onClick={() => {
                 void wallet
                   .connect()

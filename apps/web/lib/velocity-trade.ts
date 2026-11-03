@@ -5,9 +5,9 @@
  * wallet signs. There is no server key and the API never sees a transaction. The SDK is imported lazily so
  * it only loads when needed.
  *
- * NOT verified end to end: no order has been signed against devnet from this code. Simulation-first
- * means a bad build fails before anything is sent, but treat every flow as unproven until the owner has
- * run it with a funded devnet wallet (see docs/DEVNET-TRADING.md).
+ * Verified on devnet by the owner (Phantom, 2026-11-03): faucet mint, account creation plus deposit, market
+ * orders and cancel (see docs/DEVNET-TRADING.md). Not verified on chain: reduce-only close, builder codes,
+ * limit orders. Simulation-first means a bad build fails before anything is sent.
  */
 import type {
   AccountMeta,
@@ -172,6 +172,58 @@ async function accountExists(session: Session, address: PublicKey): Promise<bool
 /** True when the wallet already has subaccount 0. A missing account is a normal first-use state. */
 export async function hasUserAccount(session: Session): Promise<boolean> {
   return accountExists(session, userAddress(session));
+}
+
+/** Token amount (in token base units) behind a scaled spot balance: scaled (1e9) * cumulative interest (1e10) / 10^(19 - decimals). */
+export function spotTokenUnits(scaledBalance: bigint, cumulativeInterest: bigint, decimals: number): bigint {
+  return (scaledBalance * cumulativeInterest) / 10n ** BigInt(19 - decimals);
+}
+
+export interface PositionSummary {
+  marketIndex: number;
+  /** Signed size, 1e9 base units. Positive is long, negative is short. */
+  baseUnits: bigint;
+  /** Quote the position was entered with (1e6), excluding fees and funding. */
+  entryQuoteUnits: bigint;
+  openOrders: number;
+}
+
+export interface AccountSummary {
+  /** Net quote-token collateral in dUSDT base units (6 decimals); negative means a borrow. Uses the interest index read when the session opened. */
+  collateralUnits: bigint;
+  /** Perp positions that are non-zero or have open orders. */
+  positions: PositionSummary[];
+}
+
+const big = (value: unknown): bigint => BigInt((value as { toString(): string }).toString());
+
+/** Reads subaccount 0. Returns null when the account does not exist yet. Read-only, no wallet needed. */
+export async function readAccountSummary(session: Session): Promise<AccountSummary | null> {
+  const user = await session.sdk.VelocityCore.fetchUserAccount(session.connection, userAddress(session));
+  if (!user) return null;
+  const quote = session.core.spotMarkets.get(QUOTE_MARKET_INDEX);
+  let collateralUnits = 0n;
+  for (const position of user.spotPositions) {
+    if (position.marketIndex !== QUOTE_MARKET_INDEX) continue;
+    const scaled = big(position.scaledBalance);
+    if (scaled === 0n) continue;
+    const isBorrow = "borrow" in (position.balanceType as object);
+    const interest = big(isBorrow ? quote?.cumulativeBorrowInterest ?? 10n ** 10n : quote?.cumulativeDepositInterest ?? 10n ** 10n);
+    const amount = spotTokenUnits(scaled, interest, 6);
+    collateralUnits += isBorrow ? -amount : amount;
+  }
+  const positions: PositionSummary[] = [];
+  for (const position of user.perpPositions) {
+    const baseUnits = big(position.baseAssetAmount);
+    if (baseUnits === 0n && position.openOrders === 0) continue;
+    positions.push({
+      marketIndex: position.marketIndex,
+      baseUnits,
+      entryQuoteUnits: big(position.quoteEntryAmount),
+      openOrders: position.openOrders,
+    });
+  }
+  return { collateralUnits, positions };
 }
 
 /** dUSDT balance of the wallet's token account in base units (6 decimals), or 0n when it has none. */
@@ -400,6 +452,8 @@ export interface OrderRequest {
   priceUnits: bigint;
   /** Only for limit: reject instead of crossing the book. */
   postOnly: boolean;
+  /** The order may only shrink an existing position (used to close one). */
+  reduceOnly?: boolean;
   /** Builder to credit, from NEXT_PUBLIC_BUILDER_ADDRESS. Omitted means no builder fee. */
   builder?: { index: number; feeTenthsBp: number };
 }
@@ -419,6 +473,7 @@ export async function placeOrder(session: Session, wallet: SignerWallet, request
     marketType: sdk.MarketType.PERP,
     direction: request.side === "Long" ? sdk.PositionDirection.LONG : sdk.PositionDirection.SHORT,
     baseAssetAmount: new sdk.BN(request.baseUnits.toString()),
+    ...(request.reduceOnly ? { reduceOnly: true } : {}),
     ...builder,
   };
   const price = new sdk.BN(request.priceUnits.toString());
@@ -447,6 +502,31 @@ export async function placeOrder(session: Session, wallet: SignerWallet, request
     remainingAccounts: remaining,
   });
   return simulateSignSend(session, wallet, [ix]);
+}
+
+/**
+ * Closes (or shrinks) a perp position with a reduce-only market order in the opposite direction.
+ * `closeUnits` is a positive size in 1e9 base units and may not exceed the position.
+ */
+export async function closePosition(
+  session: Session,
+  wallet: SignerWallet,
+  position: Pick<PositionSummary, "marketIndex" | "baseUnits">,
+  closeUnits: bigint,
+  worstPriceUnits: bigint,
+): Promise<SentResult> {
+  const held = position.baseUnits < 0n ? -position.baseUnits : position.baseUnits;
+  if (held === 0n) throw new TradeError("There is no open position on this market", "config");
+  if (closeUnits <= 0n || closeUnits > held) throw new TradeError("Close size must be positive and at most the position size", "config");
+  return placeOrder(session, wallet, {
+    marketIndex: position.marketIndex,
+    side: position.baseUnits > 0n ? "Short" : "Long",
+    baseUnits: closeUnits,
+    kind: "market",
+    priceUnits: worstPriceUnits,
+    postOnly: false,
+    reduceOnly: true,
+  });
 }
 
 export async function cancelAllOnMarket(session: Session, wallet: SignerWallet, marketIndex: number): Promise<SentResult> {
