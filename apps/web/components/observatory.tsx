@@ -1440,7 +1440,7 @@ function TradePanel({ perp }: { perp?: Perp }) {
       : null;
   const fee = data?.trading.builderFeeTenthsBp ?? 20;
   return (
-    <section className="panel trade-panel" id="trade-ticket">
+    <section className="panel trade-panel" id="trade-ticket" data-no-cursor-fx="">
       <div className="panel-kicker">
         <span>03 / EXECUTION</span>
         <LockKeyhole size={13} />

@@ -10,6 +10,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { WalletProvider, useWallet } from "@solana/wallet-adapter-react";
+import { CursorFx } from "./cursor-fx";
 import { WalletReadyState } from "@solana/wallet-adapter-base";
 import bs58 from "bs58";
 import {
@@ -142,6 +143,7 @@ export function ObservatoryProvider({
   return (
     <WalletProvider wallets={[]} autoConnect>
       <DataProvider>{children}</DataProvider>
+      <CursorFx />
     </WalletProvider>
   );
 }

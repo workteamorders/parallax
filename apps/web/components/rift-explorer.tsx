@@ -160,6 +160,11 @@ export function RiftExplorer({
             selectionKey={selected?.id ?? ""}
             paused={paused}
             resetToken={resetToken}
+            agitation={
+              perp?.change24h == null
+                ? 0.5
+                : Math.min(1, 0.35 + Math.abs(perp.change24h) / 9)
+            }
           />
         </div>
         <button

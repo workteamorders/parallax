@@ -9,6 +9,11 @@ type RiftSceneProps = {
   selectionKey?: string;
   paused?: boolean;
   resetToken?: number;
+  /**
+   * 0..1 market agitation that scales the seam glow. 0.5 is the neutral look. It is derived from the size of the
+   * perp's 24h move and is decoration, not a signal or a measure of any divergence.
+   */
+  agitation?: number;
 };
 
 export function RiftScene({
@@ -16,18 +21,19 @@ export function RiftScene({
   selectionKey = "",
   paused = false,
   resetToken = 0,
+  agitation = 0.5,
 }: RiftSceneProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fallbackRef = useRef<SVGSVGElement>(null);
-  const controls = useRef({ focus, selectionKey, paused, resetToken });
+  const controls = useRef({ focus, selectionKey, paused, resetToken, agitation });
   const refreshRef = useRef<(() => void) | null>(null);
   const id = useId().replace(/:/g, "");
 
   useEffect(() => {
-    controls.current = { focus, selectionKey, paused, resetToken };
+    controls.current = { focus, selectionKey, paused, resetToken, agitation };
     refreshRef.current?.();
-  }, [focus, selectionKey, paused, resetToken]);
+  }, [focus, selectionKey, paused, resetToken, agitation]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -61,6 +67,16 @@ export function RiftScene({
     let dragPitch = 0;
     let hoverX = 0;
     let hoverY = 0;
+    let hoverActive = false;
+    // Eased interaction state: the two halves slide along the seam with the pointer, the seam brightens
+    // near the pointer, and clicks send a pulse and a burst of embers along the seam.
+    let slip = 0;
+    let proximity = 0;
+    let cursorGlow = 0;
+    let kick = 0;
+    let energy = 1;
+    let clickStart: { x: number; y: number } | null = null;
+    let spawnPulse: (screenY: number) => void = () => {};
     let drag: {
       id: number;
       x: number;
@@ -160,6 +176,7 @@ export function RiftScene({
         dragPitch = 0;
         hoverX = 0;
         hoverY = 0;
+        hoverActive = false;
         if (drag && root.hasPointerCapture(drag.id))
           root.releasePointerCapture(drag.id);
         drag = null;
@@ -546,6 +563,89 @@ export function RiftScene({
           );
           world.add(dust);
 
+          // Cursor light: a warm point light that rides the seam under the pointer.
+          const cursorLight = new THREE.PointLight(0xff8a3d, 0, 9, 2);
+          cursorLight.position.set(0, 0.8, 0);
+          world.add(cursorLight);
+
+          // Click pulse: one halo that swells and fades at the seam position that was clicked.
+          const pulseMaterial = material(
+            new THREE.SpriteMaterial({
+              map: haloTexture,
+              color: 0xff7a2e,
+              transparent: true,
+              opacity: 0,
+              blending: THREE.AdditiveBlending,
+              depthWrite: false,
+              toneMapped: false,
+            }),
+          );
+          const pulseSprite = new THREE.Sprite(pulseMaterial);
+          pulseSprite.visible = false;
+          world.add(pulseSprite);
+          const pulses: { z: number; t: number }[] = [];
+
+          // Ember burst: a fixed pool of points, black (invisible under additive blending) when dead.
+          const EMBERS = 48;
+          const emberPositions = new Float32Array(EMBERS * 3);
+          const emberColors = new Float32Array(EMBERS * 3);
+          const emberVelocity = new Float32Array(EMBERS * 3);
+          const emberLife = new Float32Array(EMBERS);
+          const emberGeometry = geometry(new THREE.BufferGeometry());
+          emberGeometry.setAttribute(
+            "position",
+            new THREE.BufferAttribute(emberPositions, 3),
+          );
+          emberGeometry.setAttribute(
+            "color",
+            new THREE.BufferAttribute(emberColors, 3),
+          );
+          const emberPoints = new THREE.Points(
+            emberGeometry,
+            material(
+              new THREE.PointsMaterial({
+                size: 0.07,
+                vertexColors: true,
+                transparent: true,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                toneMapped: false,
+              }),
+            ),
+          );
+          emberPoints.frustumCulled = false;
+          world.add(emberPoints);
+          let nextEmber = 0;
+
+          // Screen height maps onto the seam: the seam runs toward the camera, so the top of the hero is far.
+          const seamZ = (screenY: number) =>
+            THREE.MathUtils.clamp(
+              ((screenY - root!.getBoundingClientRect().top) /
+                Math.max(root!.getBoundingClientRect().height, 1)) *
+                2 *
+                4.5 -
+                4.5,
+              -4.5,
+              4.5,
+            );
+          spawnPulse = (screenY: number) => {
+            const z = seamZ(screenY);
+            pulses.push({ z, t: 0 });
+            if (pulses.length > 4) pulses.shift();
+            kick = 1;
+            for (let n = 0; n < 24; n++) {
+              const i = nextEmber++ % EMBERS;
+              const side = n % 2 === 0 ? -1 : 1;
+              emberPositions[i * 3] = side * 0.04;
+              emberPositions[i * 3 + 1] = 0.45;
+              emberPositions[i * 3 + 2] = z + (Math.random() - 0.5) * 0.7;
+              emberVelocity[i * 3] = side * (0.25 + Math.random() * 0.9);
+              emberVelocity[i * 3 + 1] = 0.9 + Math.random() * 1.6;
+              emberVelocity[i * 3 + 2] = (Math.random() - 0.5) * 1.1;
+              emberLife[i] = 0.7 + Math.random() * 0.5;
+            }
+          };
+
           function resize() {
             if (!renderer || disposed || failed) return;
             const bounds = root!.getBoundingClientRect();
@@ -613,6 +713,79 @@ export function RiftScene({
             world.rotation.set(pitch, yaw, -0.025);
             lands[0].position.y = Math.sin(elapsed * 0.32) * 0.045;
             lands[1].position.y = 0.12 + Math.sin(elapsed * 0.29 + 1.8) * 0.055;
+            {
+              const dt = active ? Math.min(delta, 70) / 1000 : 0;
+              const follow = active ? 0.12 : 1;
+              // Halves slide in opposite directions along the seam as the pointer moves across the hero.
+              const targetSlip = active && hoverActive ? hoverX * 0.3 : 0;
+              slip += (targetSlip - slip) * follow;
+              // The seam opens slightly and brightens when the pointer is near the middle of the hero.
+              const targetProximity =
+                active && hoverActive ? 1 - Math.min(1, Math.abs(hoverX) * 1.4) : 0;
+              proximity += (targetProximity - proximity) * follow;
+              kick = Math.max(0, kick - dt * 2.4);
+              const open = proximity * 0.05 + kick * 0.09;
+              lands[0].position.x = -open;
+              lands[1].position.x = open;
+              lands[0].position.z = -slip;
+              lands[1].position.z = slip;
+              if (kick > 0) {
+                lands[0].position.y += Math.sin(elapsed * 60) * kick * 0.012;
+                lands[1].position.y += Math.cos(elapsed * 57) * kick * 0.012;
+              }
+              // Cursor light follows the pointer along the seam.
+              const targetGlow = active && hoverActive ? 26 * proximity : 0;
+              cursorGlow += (targetGlow - cursorGlow) * follow;
+              cursorLight.intensity = cursorGlow;
+              cursorLight.position.set(hoverX * 1.1, 0.8, THREE.MathUtils.clamp(hoverY * 4.5, -4.5, 4.5));
+              // Click pulse.
+              let strength = 0;
+              let strengthZ = 0;
+              for (let i = pulses.length - 1; i >= 0; i--) {
+                pulses[i].t += dt / 0.9;
+                if (pulses[i].t >= 1) pulses.splice(i, 1);
+              }
+              const latest = pulses[pulses.length - 1];
+              if (latest) {
+                const fade = 1 - latest.t;
+                pulseSprite.visible = true;
+                pulseSprite.position.set(0, -0.2, latest.z);
+                const size = 1.6 + latest.t * 8.5;
+                pulseSprite.scale.set(size, size, 1);
+                pulseMaterial.opacity = fade * fade * 0.75;
+                strength = fade * fade;
+                strengthZ = latest.z;
+              } else {
+                pulseSprite.visible = false;
+              }
+              faultLights.forEach((light) => {
+                if (strength > 0)
+                  light.userData.boost =
+                    strength * 42 * Math.exp(-Math.abs(light.position.z - strengthZ) * 0.5);
+                else light.userData.boost = 0;
+              });
+              // Embers drift up from the seam and fade out.
+              let alive = false;
+              for (let i = 0; i < EMBERS; i++) {
+                if (emberLife[i] <= 0) continue;
+                alive = true;
+                emberLife[i] -= dt / 1.1;
+                emberVelocity[i * 3 + 1] += 0.35 * dt;
+                emberPositions[i * 3] += emberVelocity[i * 3] * dt;
+                emberPositions[i * 3 + 1] += emberVelocity[i * 3 + 1] * dt;
+                emberPositions[i * 3 + 2] += emberVelocity[i * 3 + 2] * dt;
+                const life = Math.max(0, emberLife[i]);
+                emberColors[i * 3] = life;
+                emberColors[i * 3 + 1] = life * 0.42;
+                emberColors[i * 3 + 2] = life * 0.12;
+                if (life === 0) emberLife[i] = 0;
+              }
+              if (alive || emberLife.some((v) => v > 0)) {
+                emberGeometry.getAttribute("position").needsUpdate = true;
+                emberGeometry.getAttribute("color").needsUpdate = true;
+              }
+              energy += ((0.75 + Math.min(1, Math.max(0, controls.current.agitation)) * 0.5) - energy) * (active ? 0.05 : 1);
+            }
             for (const shard of floating)
               shard.mesh.position.y =
                 shard.y + Math.sin(elapsed * 0.44 + shard.phase) * 0.1;
@@ -626,10 +799,12 @@ export function RiftScene({
             mineralRim.intensity = eventFocus ? 4.4 : 2.7;
             emberRim.intensity = marketFocus ? 5.0 : 3.8;
             glowMaterial.opacity =
-              0.39 + accent * 0.055 + Math.sin(elapsed * 0.7) * 0.025;
+              (0.39 + accent * 0.055 + Math.sin(elapsed * 0.7) * 0.025) * energy +
+              proximity * 0.06;
             faultLights.forEach((light, i) => {
               light.intensity =
-                35 + Math.sin(elapsed * 0.8 + i) * 3 + accent * 4;
+                (35 + Math.sin(elapsed * 0.8 + i) * 3 + accent * 4) * energy +
+                ((light.userData.boost as number | undefined) ?? 0);
             });
             try {
               renderer.render(scene, camera);
@@ -666,6 +841,7 @@ export function RiftScene({
           function pointerDown(event: PointerEvent) {
             // Touch remains native pan-y; coarse devices never enter a drag gesture.
             if (event.pointerType !== "mouse" || event.button !== 0) return;
+            clickStart = { x: event.clientX, y: event.clientY };
             drag = {
               id: event.pointerId,
               x: event.clientX,
@@ -692,6 +868,7 @@ export function RiftScene({
               );
             } else {
               if (reduced || controls.current.paused) return;
+              hoverActive = true;
               hoverX =
                 ((event.clientX - bounds.left) / Math.max(bounds.width, 1)) *
                   2 -
@@ -704,6 +881,16 @@ export function RiftScene({
             invalidate();
           }
           function pointerUp(event: PointerEvent) {
+            // A press that barely moved is a click: it sends a pulse and embers along the seam.
+            if (
+              event.type === "pointerup" &&
+              clickStart &&
+              Math.hypot(event.clientX - clickStart.x, event.clientY - clickStart.y) < 5 &&
+              !reduced &&
+              !controls.current.paused
+            )
+              spawnPulse(event.clientY);
+            if (event.type !== "lostpointercapture") clickStart = null;
             if (drag?.id !== event.pointerId) return;
             drag = null;
             if (root!.hasPointerCapture(event.pointerId))
@@ -712,6 +899,7 @@ export function RiftScene({
           function pointerLeave() {
             hoverX = 0;
             hoverY = 0;
+            hoverActive = false;
             if (!drag && !reduced && !controls.current.paused) invalidate();
           }
 

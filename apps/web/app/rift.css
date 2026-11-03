@@ -2623,3 +2623,78 @@ body::before {
     cursor: default;
   }
 }
+
+/* Cursor ring, click ripple and button press feedback. The native cursor is never hidden. */
+.fx-ring {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 9998;
+  width: 28px;
+  height: 28px;
+  border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    opacity 0.18s,
+    border-color 0.18s,
+    background-color 0.18s,
+    scale 0.14s;
+  will-change: transform;
+}
+.fx-ring[data-visible="true"] {
+  opacity: 0.85;
+}
+.fx-ring[data-link="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.fx-ring[data-pressed="true"] {
+  scale: 0.78;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.fx-ripple {
+  position: fixed;
+  z-index: 9997;
+  width: 120px;
+  height: 120px;
+  margin: -60px 0 0 -60px;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: fx-ripple 0.55s ease-out forwards;
+}
+@keyframes fx-ripple {
+  from {
+    opacity: 0.75;
+    transform: scale(0.15);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .button,
+  .wallet-button {
+    transition:
+      background 0.15s,
+      border-color 0.15s,
+      transform 0.08s,
+      box-shadow 0.2s;
+  }
+  .button:active:not(:disabled),
+  .wallet-button:active {
+    transform: translateY(1px) scale(0.985);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+@media (pointer: coarse), (prefers-reduced-motion: reduce) {
+  .fx-ring,
+  .fx-ripple {
+    display: none;
+  }
+}

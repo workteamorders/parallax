@@ -180,7 +180,7 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
     });
 
   return (
-    <section className="panel trade-panel devnet-ticket" id="devnet-ticket" aria-label="Devnet test trading">
+    <section className="panel trade-panel devnet-ticket" id="devnet-ticket" aria-label="Devnet test trading" data-no-cursor-fx="">
       <div className="panel-kicker">
         <span>04 / DEVNET TEST TRADING</span>
         <FlaskConical size={13} />
