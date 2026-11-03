@@ -364,8 +364,8 @@ body::before {
   min-height: 865px;
   height: min(920px, calc(100svh + 40px));
   overflow: hidden;
-  background: radial-gradient(ellipse at 50% 64%, #38241925, transparent 46%),
-    #0c0c0e;
+  /* No solid base colour: the page-wide live backdrop shows through the hero too. */
+  background: radial-gradient(ellipse at 50% 64%, #38241925, transparent 46%);
   outline-offset: -5px;
   scroll-margin-top: 85px;
 }
@@ -374,7 +374,7 @@ body::before {
   position: absolute;
   inset: 0;
   z-index: 2;
-  background: linear-gradient(#0c0c0e00 60%, #0c0c0e55 80%, #0c0c0e 99%);
+  background: linear-gradient(#0c0c0e00 60%, #0c0c0e44 82%, #0c0c0e99 99%);
   pointer-events: none;
 }
 .rift-world-heading {
