@@ -230,6 +230,25 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
         </div>
       )}
 
+      {busy && busy !== "Connect" && (
+        <div className="reference-preview" role="status">
+          <strong>Working</strong>
+          <p>
+            {busy}: simulating, then waiting for your wallet, then waiting for confirmation on {network}. This can take up to a
+            minute. Do not press the button again.
+          </p>
+        </div>
+      )}
+      {notice && !busy && (
+        <div className="reference-preview" role="status">
+          <strong>{notice.tone === "ok" ? "Done" : "Not sent or failed"}</strong>
+          <p>{notice.text}</p>
+          {notice.logs?.map((line, i) => (
+            <p key={i}>{line}</p>
+          ))}
+        </div>
+      )}
+
       {isMain && !session && (
         <label className="trade-input">
           <span>
@@ -456,15 +475,6 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
         </>
       )}
 
-      {notice && (
-        <div className="reference-preview" role="status">
-          <strong>{notice.tone === "ok" ? "Done" : "Not sent or failed"}</strong>
-          <p>{notice.text}</p>
-          {notice.logs?.map((line, i) => (
-            <p key={i}>{line}</p>
-          ))}
-        </div>
-      )}
       <p className="margin-disclosure">
         {isMain ? (
           <>
