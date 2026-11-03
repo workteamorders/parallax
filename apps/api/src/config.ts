@@ -10,6 +10,7 @@ const env = z.object({
   WEB_ORIGIN: z.string().url().default('http://127.0.0.1:3100'),
   SOLANA_NETWORK: z.enum(['devnet', 'mainnet-beta']).default('devnet'),
   DEVNET_TRADING_ENABLED: z.enum(['true', 'false']).default('false'),
+  MAINNET_TRADING_ENABLED: z.enum(['true', 'false']).default('false'),
   BUILDER_FEE_TENTHS_BP: z.coerce.number().finite().default(20),
   BLOCKED_COUNTRIES: z.string().default('US,CU,IR,KP,SY'),
   WORKER_INTERVAL_MS: z.coerce.number().int().min(60000).default(120000),
@@ -22,7 +23,7 @@ const env = z.object({
 export const config = { ...env, WEB_ORIGIN: new URL(env.WEB_ORIGIN).origin };
 if (config.NODE_ENV === 'production' && !config.WEB_ORIGIN.startsWith('https://')) throw new Error('Production WEB_ORIGIN requires HTTPS');
 export { builderFee, tradingStatus };
-export const trading = tradingStatus(config.SOLANA_NETWORK, config.DEVNET_TRADING_ENABLED, builderFee(config.BUILDER_FEE_TENTHS_BP));
+export const trading = tradingStatus(config.SOLANA_NETWORK, config.DEVNET_TRADING_ENABLED, builderFee(config.BUILDER_FEE_TENTHS_BP), config.MAINNET_TRADING_ENABLED);
 
 export function geoDecision(country: string | undefined, trusted: boolean): { allowed: boolean; reason: string } {
   if (!trusted || !country || !/^[A-Z]{2}$/.test(country)) return { allowed: false, reason: 'Country cannot be verified' };

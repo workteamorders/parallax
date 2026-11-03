@@ -39,7 +39,8 @@ async function json(deps: LiveDeps, url: string, ttl: number): Promise<unknown> 
 export function liveTrading(env: LiveDeps["env"]) {
   const network = env.SOLANA_NETWORK === "mainnet-beta" ? "mainnet-beta" : "devnet";
   const flag = env.DEVNET_TRADING_ENABLED === "true" ? "true" : "false";
-  return tradingStatus(network, flag, builderFee(Number(env.BUILDER_FEE_TENTHS_BP ?? 20)));
+  const mainnetFlag = env.MAINNET_TRADING_ENABLED === "true" ? "true" : "false";
+  return tradingStatus(network, flag, builderFee(Number(env.BUILDER_FEE_TENTHS_BP ?? 20)), mainnetFlag);
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {

@@ -91,3 +91,15 @@ Redeploy after changing any `NEXT_PUBLIC_*` value; they are baked into the build
 - Country headers are still not trusted. Execution location checks remain deny-all server side; devnet trading is a
   browser-only test feature with no real funds.
 - Next.js is 16.4.3. (16.4.0 stopped the first build with a security notice; see DECISIONS.)
+
+## Mainnet flags (off by default, read docs/MAINNET-CHECKLIST.md first)
+
+```
+SOLANA_NETWORK=mainnet-beta
+MAINNET_TRADING_ENABLED=true                     # separate from DEVNET_TRADING_ENABLED
+NEXT_PUBLIC_SOLANA_RPC_URL=https://<your mainnet RPC>   # required, https, not devnet/testnet/local
+NEXT_PUBLIC_MAINNET_MAX_DEPOSIT_USD=10           # optional, can only lower the built-in $25 ceiling
+NEXT_PUBLIC_MAINNET_MAX_ORDER_USD=5              # optional, can only lower the built-in $10 ceiling
+```
+
+`NEXT_PUBLIC_*` values are read at build time, so redeploy after changing them.

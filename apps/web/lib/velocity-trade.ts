@@ -1,5 +1,7 @@
 /**
- * Browser-side Velocity DEVNET trading. Everything here runs in the user's browser: instructions are
+ * Browser-side Velocity trading, devnet by default. Mainnet is a separate, opt-in session that always carries
+ * hard limits (see trade-network.ts), accepts only the mainnet USDT quote mint, and never offers the test faucet.
+ * Everything here runs in the user's browser: instructions are
  * built with the SDK's subscription-free `VelocityCore` (the browser build of the SDK cannot construct
  * `VelocityClient`, `Program` or `AnchorProvider`), the transaction is simulated first, and the user's own
  * wallet signs. There is no server key and the API never sees a transaction. The SDK is imported lazily so
@@ -19,6 +21,14 @@ import type {
 } from "@solana/web3.js";
 import { APP_MAX_BUILDER_FEE_TENTHS_BP, clampBuilderFee, isDevnetRpc } from "./trade-math";
 import { makeProgram, type ProgramShim } from "./velocity-program";
+import {
+  MAINNET_QUOTE_MINT,
+  depositLimitError,
+  isMainnetRpc,
+  orderLimitError,
+  type TradeLimits,
+  type TradeNetwork,
+} from "./trade-network";
 
 export const DEVNET_RPC_DEFAULT = "https://api.devnet.solana.com";
 export const QUOTE_MARKET_INDEX = 0; // dUSDT on devnet
@@ -79,6 +89,9 @@ export interface Session {
   sdk: Sdk;
   web3: Web3;
   core: Core;
+  network: TradeNetwork;
+  /** Always set on mainnet; undefined on devnet. */
+  limits?: TradeLimits;
   close: () => Promise<void>;
 }
 
@@ -86,7 +99,7 @@ export interface SentResult {
   signature: string;
 }
 
-export async function loadCore(sdk: Sdk, web3: Web3, connection: Connection): Promise<Core> {
+export async function loadCore(sdk: Sdk, web3: Web3, connection: Connection, expectedQuoteMint?: string): Promise<Core> {
   const { VelocityCore } = sdk;
   const program = makeProgram(sdk, web3);
   const programId = program.programId;
@@ -114,6 +127,12 @@ export async function loadCore(sdk: Sdk, web3: Web3, connection: Connection): Pr
   const quote = spotMarkets.get(QUOTE_MARKET_INDEX);
   if (!quote) throw new TradeError("Spot market 0 (dUSDT) was not found on this devnet deployment", "config");
   const quoteMint = quote.mint as PublicKey;
+  if (expectedQuoteMint && quoteMint.toBase58() !== expectedQuoteMint) {
+    throw new TradeError(
+      `Spot market 0 uses mint ${quoteMint.toBase58()}, not the expected ${expectedQuoteMint}. Refusing to continue.`,
+      "config",
+    );
+  }
   const mintInfo = await connection.getAccountInfo(quoteMint, "confirmed");
   if (!mintInfo) throw new TradeError("The dUSDT mint account was not found on this RPC", "config");
   const owner = mintInfo.owner.toBase58();
@@ -144,13 +163,33 @@ export async function loadCore(sdk: Sdk, web3: Web3, connection: Connection): Pr
   };
 }
 
-export async function openSession(wallet: SignerWallet, rpcUrl: string = DEVNET_RPC_DEFAULT): Promise<Session> {
-  // Hard guard: this ticket never talks to a non-devnet endpoint.
-  if (!isDevnetRpc(rpcUrl)) throw new TradeError("Only a devnet RPC endpoint is allowed for test trading.", "config");
+export async function openSession(
+  wallet: SignerWallet,
+  rpcUrl: string = DEVNET_RPC_DEFAULT,
+  network: TradeNetwork = "devnet",
+  limits?: TradeLimits,
+): Promise<Session> {
+  // Hard guards: the RPC must match the network, and mainnet never opens without limits.
+  if (network === "devnet" && !isDevnetRpc(rpcUrl)) throw new TradeError("Only a devnet RPC endpoint is allowed for test trading.", "config");
+  if (network === "mainnet-beta") {
+    if (!isMainnetRpc(rpcUrl)) {
+      throw new TradeError("Mainnet needs a mainnet RPC endpoint. Set NEXT_PUBLIC_SOLANA_RPC_URL to an https mainnet RPC and redeploy.", "config");
+    }
+    if (!limits) throw new TradeError("Mainnet trading requires safety limits", "config");
+  }
   const [sdk, web3] = await Promise.all([import("@velocity-exchange/sdk"), import("@solana/web3.js")]);
   const connection = new web3.Connection(rpcUrl, "confirmed");
-  const core = await loadCore(sdk, web3, connection);
-  return { connection, authority: wallet.publicKey, sdk, web3, core, close: async () => undefined };
+  const core = await loadCore(sdk, web3, connection, network === "mainnet-beta" ? MAINNET_QUOTE_MINT : undefined);
+  return {
+    connection,
+    authority: wallet.publicKey,
+    sdk,
+    web3,
+    core: { ...core, faucet: network === "devnet" && core.faucet },
+    network,
+    ...(network === "mainnet-beta" ? { limits } : {}),
+    close: async () => undefined,
+  };
 }
 
 const userAddress = (session: Session) =>
@@ -410,6 +449,7 @@ function createQuoteTokenAccountInstruction(session: Session, tokenProgram: Publ
 /** Mint test dUSDT to the wallet from the devnet token faucet, creating the wallet's token account if needed. */
 export async function mintTestQuote(session: Session, wallet: SignerWallet, amountUnits: bigint = FAUCET_AMOUNT_UNITS): Promise<SentResult> {
   const { web3, core } = session;
+  if (session.network !== "devnet") throw new TradeError("The test faucet only exists on devnet", "config");
   if (!core.faucet) throw new TradeError("The dUSDT mint on this deployment is not controlled by the token faucet", "config");
   if (amountUnits <= 0n || amountUnits > FAUCET_AMOUNT_UNITS * 10n) throw new TradeError("Faucet amount out of range", "config");
   const faucetProgram = new web3.PublicKey(TOKEN_FAUCET_PROGRAM);
@@ -441,6 +481,8 @@ export async function mintTestQuote(session: Session, wallet: SignerWallet, amou
 /** First use: create subaccount 0 and deposit dUSDT in one transaction. `amountUnits` is in 1e6 base units. */
 export async function createAccountAndDeposit(session: Session, wallet: SignerWallet, amountUnits: bigint): Promise<SentResult> {
   if (amountUnits <= 0n) throw new TradeError("Deposit must be positive", "config");
+  const limitError = depositLimitError(session.limits, amountUnits, (await readAccountSummary(session))?.collateralUnits ?? 0n);
+  if (limitError) throw new TradeError(limitError, "config");
   const init = await initializeInstructions(session);
   const deposit = await depositInstruction(session, amountUnits, null);
   return simulateSignSend(session, wallet, [...init, deposit]);
@@ -448,6 +490,8 @@ export async function createAccountAndDeposit(session: Session, wallet: SignerWa
 
 export async function depositMore(session: Session, wallet: SignerWallet, amountUnits: bigint): Promise<SentResult> {
   if (amountUnits <= 0n) throw new TradeError("Deposit must be positive", "config");
+  const limitError = depositLimitError(session.limits, amountUnits, (await readAccountSummary(session))?.collateralUnits ?? 0n);
+  if (limitError) throw new TradeError(limitError, "config");
   const user = await fetchUser(session);
   return simulateSignSend(session, wallet, [await depositInstruction(session, amountUnits, user)]);
 }
@@ -504,6 +548,8 @@ export interface OrderRequest {
 export async function placeOrder(session: Session, wallet: SignerWallet, request: OrderRequest): Promise<SentResult> {
   const { sdk, core } = session;
   if (request.baseUnits <= 0n || request.priceUnits <= 0n) throw new TradeError("Size and price must be positive", "config");
+  const limitError = orderLimitError(session.limits, request.baseUnits, request.priceUnits, request.reduceOnly === true);
+  if (limitError) throw new TradeError(limitError, "config");
   const builder = request.builder
     ? { builderIdx: request.builder.index, builderFeeTenthBps: clampBuilderFee(request.builder.feeTenthsBp) }
     : {};

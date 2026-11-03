@@ -54,6 +54,9 @@ describe("live-only terminal", () => {
     expect(liveTrading({}).enabled).toBe(false);
     expect(liveTrading({ DEVNET_TRADING_ENABLED: "true" })).toMatchObject({ enabled: true, network: "devnet" });
     expect(liveTrading({ DEVNET_TRADING_ENABLED: "true", SOLANA_NETWORK: "mainnet-beta" }).enabled).toBe(false);
+    expect(liveTrading({ SOLANA_NETWORK: "mainnet-beta" }).enabled).toBe(false);
+    expect(liveTrading({ SOLANA_NETWORK: "mainnet-beta", MAINNET_TRADING_ENABLED: "true" })).toMatchObject({ enabled: true, network: "mainnet-beta" });
+    expect(liveTrading({ MAINNET_TRADING_ENABLED: "true" }).enabled).toBe(false); // devnet network ignores the mainnet flag
   });
 });
 

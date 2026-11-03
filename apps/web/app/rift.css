@@ -2731,3 +2731,16 @@ body::before {
     }
   }
 }
+
+/* Mainnet trading panel: unmistakably different from the devnet one. */
+.mainnet-ticket {
+  border-color: rgba(230, 70, 60, 0.55);
+  box-shadow: 0 0 0 1px rgba(230, 70, 60, 0.18) inset;
+}
+.mainnet-warning {
+  border-color: rgba(230, 70, 60, 0.6);
+  background: rgba(230, 70, 60, 0.1);
+}
+.mainnet-warning strong {
+  color: #ff8a80;
+}

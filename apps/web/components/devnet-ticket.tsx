@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { LoaderCircle, FlaskConical } from "lucide-react";
+import { LoaderCircle, FlaskConical, TriangleAlert } from "lucide-react";
 import type { Perp } from "@parallax/shared";
 import { useObservatory } from "./provider";
 import { usd } from "@/lib/format";
@@ -13,6 +13,7 @@ import {
   worstPriceUnits,
   type Side,
 } from "@/lib/trade-math";
+import { depositLimitError, orderLimitError, parseMainnetLimits } from "@/lib/trade-network";
 import {
   DEVNET_RPC_DEFAULT,
   FAUCET_AMOUNT_UNITS,
@@ -37,7 +38,13 @@ import {
   type SignerWallet,
 } from "@/lib/velocity-trade";
 
-const RPC_URL = process.env.NEXT_PUBLIC_SOLANA_RPC_URL ?? DEVNET_RPC_DEFAULT;
+const RPC_ENV = process.env.NEXT_PUBLIC_SOLANA_RPC_URL;
+/** Hard limits for mainnet, clamped to the ceilings in trade-network.ts whatever the configuration says. */
+const MAINNET_LIMITS = parseMainnetLimits({
+  maxDepositUsd: process.env.NEXT_PUBLIC_MAINNET_MAX_DEPOSIT_USD,
+  maxOrderUsd: process.env.NEXT_PUBLIC_MAINNET_MAX_ORDER_USD,
+});
+const limitDollars = (units: bigint) => `$${(Number(units) / 1e6).toFixed(2)}`;
 const BUILDER_ADDRESS = process.env.NEXT_PUBLIC_BUILDER_ADDRESS ?? "";
 
 const unitsToDecimal = (units: bigint, decimals: number) => {
@@ -53,6 +60,13 @@ type Notice ={ tone: "ok" | "error"; text: string; logs?: string[] } | null;
 export function DevnetTicket({ perp }: { perp?: Perp }) {
   const { data } = useObservatory();
   const wallet = useWallet();
+  const network = data?.trading.network === "mainnet-beta" ? "mainnet-beta" : "devnet";
+  const isMain = network === "mainnet-beta";
+  const quoteName = isMain ? "USDT" : "dUSDT";
+  const rpcUrl = RPC_ENV ?? (isMain ? "" : DEVNET_RPC_DEFAULT);
+  const limits = isMain ? MAINNET_LIMITS : undefined;
+  const [ack, setAck] = useState("");
+  const mainnetReady = !isMain || ack.trim() === "MAINNET";
   const sessionRef = useRef<Session | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -117,19 +131,19 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
     setNotice(null);
     try {
       const result = await work();
-      setNotice({ tone: "ok", text: result ? `${label} confirmed on devnet. Signature ${result.signature}` : `${label} done` });
+      setNotice({ tone: "ok", text: result ? `${label} confirmed on ${network}. Signature ${result.signature}` : `${label} done` });
     } catch (error) {
       if (error instanceof TradeError) setNotice({ tone: "error", text: error.message, logs: error.logs?.slice(-6) });
       else setNotice({ tone: "error", text: error instanceof Error ? error.message : "Unexpected error" });
     } finally {
       setBusy(null);
     }
-  }, []);
+  }, [network]);
 
   const connect = () =>
     run("Connect", async () => {
       if (!signer) throw new TradeError("Connect a wallet first", "config");
-      const s = await openSession(signer, RPC_URL);
+      const s = await openSession(signer, rpcUrl, network, limits);
       sessionRef.current = s;
       setSession(s);
       await refresh(s);
@@ -143,8 +157,11 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
   const amount = Number(size);
   const refPrice = kind === "limit" ? Number(price) : (perp?.mark ?? 0);
   const notional = amount > 0 && Number.isFinite(amount) && refPrice > 0 ? amount * refPrice : null;
+  const orderBlocked = sizeUnits && priceUnits ? orderLimitError(limits, sizeUnits, priceUnits, false) : null;
+  const depositUnitsInput = decimalToUnits(deposit, 6);
+  const depositBlocked = depositUnitsInput ? depositLimitError(limits, depositUnitsInput, summary?.collateralUnits ?? 0n) : null;
   const canOrder =
-    Boolean(session && signer && perp && account && marketOk && sizeUnits && priceUnits && !busy) &&
+    Boolean(session && signer && perp && account && marketOk && sizeUnits && priceUnits && !busy && !orderBlocked) &&
     (!useBuilder || builderIndex !== null);
 
   const position = perp ? summary?.positions.find((p) => p.marketIndex === perp.marketIndex) ?? null : null;
@@ -180,40 +197,68 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
     });
 
   return (
-    <section className="panel trade-panel devnet-ticket" id="devnet-ticket" aria-label="Devnet test trading" data-no-cursor-fx="">
+    <section
+      className={`panel trade-panel devnet-ticket${isMain ? " mainnet-ticket" : ""}`}
+      id="devnet-ticket"
+      aria-label={isMain ? "Mainnet trading" : "Devnet test trading"}
+      data-no-cursor-fx=""
+    >
       <div className="panel-kicker">
-        <span>04 / DEVNET TEST TRADING</span>
-        <FlaskConical size={13} />
+        <span>{isMain ? "04 / MAINNET TRADING, REAL FUNDS" : "04 / DEVNET TEST TRADING"}</span>
+        {isMain ? <TriangleAlert size={13} /> : <FlaskConical size={13} />}
       </div>
-      <div className="trade-lock">
-        <FlaskConical size={14} />
-        <p>
-          <strong>Test funds only. Not verified end to end.</strong>
-          Your wallet signs every transaction after a simulation. Quotes above are mainnet data, devnet prices
-          differ. Collateral is dUSDT. This is not a recommendation and nothing here touches mainnet.
-        </p>
-      </div>
+      {isMain ? (
+        <div className="trade-lock mainnet-warning" role="alert">
+          <TriangleAlert size={14} />
+          <p>
+            <strong>MAINNET. Real USDT. You can lose all of it.</strong>
+            Safety limits in this app: the account may hold at most {limitDollars(MAINNET_LIMITS.maxDepositUnits)} in
+            total, and one new order may be at most {limitDollars(MAINNET_LIMITS.maxOrderQuoteUnits)} at its price
+            cap. Closing a position and withdrawing are never limited. Your wallet signs every transaction after a
+            simulation, and its prompt must say Solana Mainnet. Perpetual futures are leveraged and can be liquidated.
+            This is not investment advice, and the first mainnet use of this panel has not been proven yet.
+          </p>
+        </div>
+      ) : (
+        <div className="trade-lock">
+          <FlaskConical size={14} />
+          <p>
+            <strong>Test funds only. Not verified end to end.</strong>
+            Your wallet signs every transaction after a simulation. Quotes above are mainnet data, devnet prices
+            differ. Collateral is dUSDT. This is not a recommendation and nothing here touches mainnet.
+          </p>
+        </div>
+      )}
+
+      {isMain && !session && (
+        <label className="trade-input">
+          <span>
+            Type MAINNET to unlock <span>confirmation</span>
+          </span>
+          <input type="text" autoComplete="off" spellCheck={false} placeholder="MAINNET" value={ack} onChange={(e) => setAck(e.target.value)} />
+        </label>
+      )}
 
       {!session ? (
-        <button className="button primary full" disabled={!signer || busy !== null} onClick={connect}>
+        <button className="button primary full" disabled={!signer || busy !== null || !mainnetReady} onClick={connect}>
           {busy === "Connect" ? <LoaderCircle size={14} className="spin" /> : null}
-          {signer ? "Open devnet session" : "Connect a wallet first"}
+          {!signer ? "Connect a wallet first" : !mainnetReady ? "Type MAINNET above to continue" : isMain ? "Open mainnet session" : "Open devnet session"}
         </button>
       ) : (
         <>
           <dl className="trade-breakdown">
             <div>
-              <dt>Devnet market</dt>
+              <dt>{isMain ? "Mainnet market" : "Devnet market"}</dt>
               <dd>
                 {perp
                   ? marketOk
                     ? `${devnetMarketName(session, perp.marketIndex)} (index ${perp.marketIndex})`
-                    : "Not available on devnet at this index"
+                    : `Not available on ${network} at this index`
                   : "No linked perp"}
               </dd>
             </div>
             <div>
-              <dt>Wallet dUSDT</dt>
+              <dt>Wallet {quoteName}</dt>
               <dd>{balance === null ? "--" : unitsToDecimal(balance, 6)}</dd>
             </div>
             <div>
@@ -223,7 +268,7 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
             {summary && (
               <div>
                 <dt>Account collateral</dt>
-                <dd>{signedUnitsToDecimal(summary.collateralUnits, 6)} dUSDT</dd>
+                <dd>{signedUnitsToDecimal(summary.collateralUnits, 6)} {quoteName}</dd>
               </div>
             )}
             {summary && (
@@ -257,13 +302,13 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
 
           <label className="trade-input">
             <span>
-              {account ? "Deposit more" : "Create account and deposit"} <span>dUSDT</span>
+              {account ? "Deposit more" : "Create account and deposit"} <span>{quoteName}</span>
             </span>
             <input type="number" min="0" step="any" placeholder="0.00" value={deposit} onChange={(e) => setDeposit(e.target.value)} />
           </label>
           <button
             className="button primary full"
-            disabled={!signer || busy !== null || !decimalToUnits(deposit, 6)}
+            disabled={!signer || busy !== null || !depositUnitsInput || Boolean(depositBlocked)}
             onClick={() =>
               run(account ? "Deposit" : "Create account and deposit", async () => {
                 const units = decimalToUnits(deposit, 6);
@@ -276,12 +321,13 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
           >
             {account ? "Deposit" : "Create account and deposit"}
           </button>
+          {depositBlocked && <p className="margin-disclosure">{depositBlocked}</p>}
 
           {account && (
             <>
               <label className="trade-input">
                 <span>
-                  Withdraw to wallet <span>dUSDT</span>
+                  Withdraw to wallet <span>{quoteName}</span>
                 </span>
                 <input type="number" min="0" step="any" placeholder="0.00" value={withdraw} onChange={(e) => setWithdraw(e.target.value)} />
               </label>
@@ -383,6 +429,7 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
               <dd>Shown by your wallet after simulation</dd>
             </div>
           </dl>
+          {orderBlocked && <p className="margin-disclosure">{orderBlocked}</p>}
           <button className="button primary full" disabled={!canOrder} onClick={submitOrder}>
             {busy && busy.startsWith(side) ? <LoaderCircle size={14} className="spin" /> : null}
             Simulate, then sign {side} {kind}
@@ -419,10 +466,22 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
         </div>
       )}
       <p className="margin-disclosure">
-        Velocity uses cross-margin within each subaccount. Devnet quotes, fees and oracle prices can differ from the
-        mainnet figures shown elsewhere on this page. The owner ran faucet, deposit, market orders and cancel on
-        devnet with Phantom; the reduce-only close and the position view are new and unproven on chain. Review each
-        wallet prompt and check that it says Devnet before signing.
+        {isMain ? (
+          <>
+            Velocity uses cross-margin within each subaccount, and positions can be liquidated. Fees, funding and oracle
+            prices are real. The deposit, order and cancel steps worked on devnet with Phantom; the reduce-only close, the
+            position view and the withdrawal are newer and were proven on devnet only if you tested them. Check that your
+            wallet prompt says Solana Mainnet and the amount is what you intend before signing. Withdraw everything and
+            check your balance on a block explorer after each session.
+          </>
+        ) : (
+          <>
+            Velocity uses cross-margin within each subaccount. Devnet quotes, fees and oracle prices can differ from the
+            mainnet figures shown elsewhere on this page. The owner ran faucet, deposit, market orders and cancel on
+            devnet with Phantom; the reduce-only close and the position view are new and unproven on chain. Review each
+            wallet prompt and check that it says Devnet before signing.
+          </>
+        )}
       </p>
     </section>
   );

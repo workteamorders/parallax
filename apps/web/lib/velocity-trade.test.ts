@@ -11,6 +11,7 @@ import {
   FAUCET_AMOUNT_UNITS,
   loadCore,
   mintTestQuote,
+  openSession,
   placeOrder,
   readAccountSummary,
   spotTokenUnits,
@@ -110,7 +111,7 @@ async function session(extra: Map<string, { data: Buffer; owner: web3.PublicKey 
   extra.set(mint.toBase58(), { data: mintData(mintAuthority), owner: TOKEN_PROGRAM });
   const fake = fakeConnection(f.data, extra);
   const core = await loadCore(sdk, web3, fake.connection);
-  const s: Session = { connection: fake.connection, authority, sdk, web3, core, close: async () => undefined };
+  const s: Session = { connection: fake.connection, authority, sdk, web3, core, network: "devnet", close: async () => undefined };
   return { s, sent: fake.sent, f, extra };
 }
 
@@ -358,5 +359,60 @@ describe("velocity trade session (offline, fake RPC)", () => {
     const { s } = await session();
     await expect(withdrawQuote(s, declining, 0n)).rejects.toBeInstanceOf(TradeError);
     await expect(withdrawQuote(s, declining, 1n)).rejects.toThrow(/Create the Velocity account first/);
+  });
+
+  describe("mainnet session guards", () => {
+    const limits = { maxDepositUnits: 10_000_000n, maxOrderQuoteUnits: 5_000_000n };
+    const asMainnet = (s: Session): Session => ({ ...s, network: "mainnet-beta", limits });
+
+    it("refuses a deposit that would push the account above the limit, before simulating anything", async () => {
+      const { s, sent } = await userWithPosition(0n); // the fixture account already holds 10 USDT of collateral
+      const m = asMainnet(s);
+      await expect(depositMore(m, declining, 1_000_000n)).rejects.toThrow(/safety limit/);
+      expect(sent).toHaveLength(0);
+    });
+
+    it("refuses a first deposit above the limit and lets one within it reach the simulation", async () => {
+      const { s, sent } = await session();
+      const m = asMainnet(s);
+      await expect(createAccountAndDeposit(m, declining, 10_000_001n)).rejects.toThrow(/safety limit/);
+      expect(sent).toHaveLength(0);
+      await expect(createAccountAndDeposit(m, declining, 10_000_000n)).rejects.toMatchObject({ code: "rejected" });
+      expect(sent).toHaveLength(1);
+    });
+
+    it("limits new orders by notional at the price cap but never limits a reduce-only close", async () => {
+      const { s, sent } = await userWithPosition(-1_000_000n);
+      const m = asMainnet(s);
+      const big = { marketIndex: 1, side: "Long" as const, baseUnits: 100_000_000n, kind: "market" as const, priceUnits: 77_500_000_000n, postOnly: false };
+      await expect(placeOrder(m, declining, big)).rejects.toThrow(/safety limit/); // 0.1 BTC is about $7,750
+      expect(sent).toHaveLength(0);
+      // 0.00006 BTC at a 77,500 cap is $4.65, inside the $5 limit.
+      await expect(placeOrder(m, declining, { ...big, baseUnits: 60_000n })).rejects.toMatchObject({ code: "rejected" });
+      expect(sent).toHaveLength(1);
+      // Closing is reduce-only and always allowed, whatever its notional.
+      await expect(closePosition(m, declining, { marketIndex: 1, baseUnits: -1_000_000n }, 1_000_000n, 90_000_000_000n)).rejects.toMatchObject({ code: "rejected" });
+      expect(sent).toHaveLength(2);
+    });
+
+    it("never mints test tokens on mainnet", async () => {
+      const { s } = await session();
+      await expect(mintTestQuote(asMainnet(s), declining)).rejects.toThrow(/only exists on devnet/);
+    });
+
+    it("refuses a quote mint other than the expected mainnet one", async () => {
+      const f = await loadCoreWith();
+      const extra = new Map([[mint.toBase58(), { data: mintData(), owner: TOKEN_PROGRAM }]]);
+      const fake = fakeConnection(f.data, extra);
+      await expect(loadCore(sdk, web3, fake.connection, key().toBase58())).rejects.toThrow(/not the expected/);
+    });
+
+    it("refuses to open a mainnet session on a devnet RPC or without limits, and a devnet session on a mainnet RPC", async () => {
+      const wallet = { ...declining, publicKey: authority };
+      await expect(openSession(wallet, "https://api.devnet.solana.com", "mainnet-beta", limits)).rejects.toThrow(/mainnet RPC/);
+      await expect(openSession(wallet, "http://rpc.example.com", "mainnet-beta", limits)).rejects.toThrow(/mainnet RPC/);
+      await expect(openSession(wallet, "https://rpc.example.com", "mainnet-beta")).rejects.toThrow(/safety limits/);
+      await expect(openSession(wallet, "https://api.mainnet-beta.solana.com", "devnet")).rejects.toThrow(/devnet RPC/);
+    });
   });
 });

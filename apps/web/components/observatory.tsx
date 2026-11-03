@@ -1336,9 +1336,7 @@ function ThemePage({ theme }: { theme: Theme }) {
         </section>
         <TradePanel perp={perp} />
       </div>
-      {data?.trading.enabled && data.trading.network === "devnet" && (
-        <DevnetTicket perp={perp} />
-      )}
+      {data?.trading.enabled && <DevnetTicket perp={perp} />}
       <section className="panel rules-panel">
         <div className="detail-tabs">
           {["Resolution Rules", "Signal History", "Mapping Review"].map((t) => (
@@ -1587,7 +1585,9 @@ function TradePanel({ perp }: { perp?: Perp }) {
             {data?.trading.enabled ? "Reference only." : "Execution is locked."}
           </strong>
           {data?.trading.enabled
-            ? "This panel never signs. Devnet test trading is in its own panel below, and has not been verified end to end."
+            ? data.trading.network === "mainnet-beta"
+              ? "This panel never signs. MAINNET trading is in its own panel below, with hard limits. Real funds."
+              : "This panel never signs. Devnet test trading is in its own panel below, and has not been verified end to end."
             : "No wallet signature or order submission. Devnet signing has not been verified end to end."}
         </p>
       </div>

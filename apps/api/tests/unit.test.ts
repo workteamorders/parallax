@@ -162,6 +162,13 @@ describe('execution and identity safety', () => {
     expect(tradingStatus('mainnet-beta', 'true', 20)).toMatchObject({ enabled: false, network: 'mainnet-beta' });
     expect(tradingStatus('mainnet-beta', 'false', 20).enabled).toBe(false);
   });
+  it('enables mainnet only with its own flag, and the devnet flag never does', () => {
+    expect(tradingStatus('mainnet-beta', 'true', 20, 'false').enabled).toBe(false);
+    expect(tradingStatus('mainnet-beta', 'false', 20, 'true')).toMatchObject({ enabled: true, network: 'mainnet-beta' });
+    expect(tradingStatus('mainnet-beta', 'false', 20, 'true').reason).toMatch(/MAINNET/);
+    expect(tradingStatus('devnet', 'false', 20, 'true').enabled).toBe(false);
+    expect(tradingStatus('devnet', 'true', 20, 'true').enabled).toBe(true);
+  });
   it('fails closed on untrusted or absent location and restricted countries', () => {
     expect(geoDecision('US', true).allowed).toBe(false);
     expect(geoDecision('GB', false).allowed).toBe(false);
