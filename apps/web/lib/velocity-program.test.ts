@@ -48,6 +48,23 @@ describe("velocity program shim", () => {
     });
   });
 
+  it("matches the real program for withdraw", async () => {
+    await same("withdraw", 0, new sdk.BN(2_000_000), true, {
+      accounts: {
+        state,
+        spotMarket: key(),
+        spotMarketVault: key(),
+        velocitySigner: key(),
+        user,
+        userStats,
+        userTokenAccount: key(),
+        authority,
+        tokenProgram: key(),
+      },
+      remainingAccounts: remaining,
+    });
+  });
+
   it("matches for user and stats initialisation", async () => {
     const accounts = { user, userStats, authority, payer: authority, rent: SYSVAR_RENT_PUBKEY, systemProgram: SystemProgram.programId, state };
     await same("initializeUser", 0, sdk.encodeName(sdk.DEFAULT_USER_NAME), { accounts, remainingAccounts: [] });

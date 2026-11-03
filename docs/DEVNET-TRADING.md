@@ -65,7 +65,10 @@ Added afterwards, checked offline only (unit tests with a fake RPC; typecheck, l
 and **not yet run on chain**: the panel now reads the Velocity account (collateral and position on the open market,
 refreshed after each action), a "Close position" button that sends a reduce-only market order in the opposite
 direction for the full position size, and wallet auto-connect (the wallet reconnects after a page change if it
-was approved before). Collateral uses the interest index read when the session opened, so it is approximate and
+was approved before), and a "Withdraw to wallet" action (reduce-only, capped to the deposit balance so it can
+never open a borrow; it creates the wallet's token account if missing, and the program still enforces margin so a
+withdrawal that would leave an open position under-margined fails in simulation). The withdraw instruction bytes
+and accounts match the real Anchor program in `velocity-program.test.ts`. Collateral uses the interest index read when the session opened, so it is approximate and
 excludes unrealized PnL, funding and fees.
 
 Not checked: the builder-code path against the real program (only encoded and compared offline); withdrawals (not

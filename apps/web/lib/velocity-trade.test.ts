@@ -16,6 +16,7 @@ import {
   spotTokenUnits,
   TOKEN_FAUCET_PROGRAM,
   approveBuilder,
+  withdrawQuote,
   TradeError,
   type Session,
   type SignerWallet,
@@ -329,5 +330,33 @@ describe("velocity trade session (offline, fake RPC)", () => {
     await expect(closePosition(s, declining, position, 2_000_000n, 77_500_000_000n)).rejects.toBeInstanceOf(TradeError);
     await expect(closePosition(s, declining, position, 0n, 77_500_000_000n)).rejects.toBeInstanceOf(TradeError);
     await expect(closePosition(s, declining, { marketIndex: 1, baseUnits: 0n }, 1n, 1n)).rejects.toThrow(/no open position/);
+  });
+
+  it("withdraws reduce-only after creating the token account idempotently, and simulates before the wallet is asked", async () => {
+    const { s, sent } = await userWithPosition(0n);
+    await expect(withdrawQuote(s, declining, 5_000_000n)).rejects.toMatchObject({ code: "rejected" });
+    expect(sent).toHaveLength(1);
+    const tx = sent[0]!;
+    const ids = programIds(tx);
+    expect(ids.at(-1)).toBe(s.core.programId.toBase58());
+    expect(ids.at(-2)).toBe("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+    const ix = tx.message.compiledInstructions.at(-1)!;
+    const decoded = s.core.program.coder.instruction.decode(Buffer.from(ix.data)) as unknown as {
+      name: string;
+      data: { marketIndex: number; amount: { toString(): string }; reduceOnly: boolean };
+    };
+    expect(decoded.name).toBe("withdraw");
+    expect(decoded.data.marketIndex).toBe(0);
+    expect(decoded.data.amount.toString()).toBe("5000000");
+    expect(decoded.data.reduceOnly).toBe(true);
+    const keys = tx.message.staticAccountKeys.map((k) => k.toBase58());
+    expect(keys).toContain(vault.toBase58());
+    expect(keys).toContain(authority.toBase58());
+  });
+
+  it("refuses a non-positive withdrawal and a withdrawal without an account", async () => {
+    const { s } = await session();
+    await expect(withdrawQuote(s, declining, 0n)).rejects.toBeInstanceOf(TradeError);
+    await expect(withdrawQuote(s, declining, 1n)).rejects.toThrow(/Create the Velocity account first/);
   });
 });

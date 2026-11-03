@@ -31,6 +31,7 @@ import {
   placeOrder,
   readAccountSummary,
   walletQuoteBalance,
+  withdrawQuote,
   type AccountSummary,
   type Session,
   type SignerWallet,
@@ -66,6 +67,7 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
   const [slippage, setSlippage] = useState("0.5");
   const [postOnly, setPostOnly] = useState(false);
   const [deposit, setDeposit] = useState("");
+  const [withdraw, setWithdraw] = useState("");
   const [builderIndex, setBuilderIndex] = useState<number | null>(null);
 
   const feeTenthsBp = clampBuilderFee(data?.trading.builderFeeTenthsBp ?? 20);
@@ -274,6 +276,39 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
           >
             {account ? "Deposit" : "Create account and deposit"}
           </button>
+
+          {account && (
+            <>
+              <label className="trade-input">
+                <span>
+                  Withdraw to wallet <span>dUSDT</span>
+                </span>
+                <input type="number" min="0" step="any" placeholder="0.00" value={withdraw} onChange={(e) => setWithdraw(e.target.value)} />
+              </label>
+              <button
+                className="button full"
+                disabled={!summary || summary.collateralUnits <= 0n || busy !== null}
+                onClick={() => summary && setWithdraw(unitsToDecimal(summary.collateralUnits, 6))}
+              >
+                Fill with all collateral
+              </button>
+              <button
+                className="button full"
+                disabled={!signer || busy !== null || !decimalToUnits(withdraw, 6)}
+                onClick={() =>
+                  run("Withdraw", async () => {
+                    const units = decimalToUnits(withdraw, 6);
+                    if (!signer || !units) throw new TradeError("Enter a withdrawal amount", "config");
+                    const result = await withdrawQuote(session, signer, units);
+                    await refresh(session);
+                    return result;
+                  })
+                }
+              >
+                Withdraw (reduce only, margin enforced by the program)
+              </button>
+            </>
+          )}
 
           {useBuilder && (
             <button

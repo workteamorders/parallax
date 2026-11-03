@@ -67,6 +67,8 @@ interface Core {
   spotMarkets: Map<number, LoadedMarket>;
   quoteMint: PublicKey;
   quoteTokenProgram: PublicKey;
+  /** The program's PDA signer from `State.signer`; withdrawals pay out of the vault through it. */
+  velocitySigner: PublicKey;
   /** True when the dUSDT mint authority is the token faucet's PDA, so test tokens can be minted from the wallet. */
   faucet: boolean;
 }
@@ -98,7 +100,7 @@ export async function loadCore(sdk: Sdk, web3: Web3, connection: Connection): Pr
   if (!stateInfo) {
     throw new TradeError("Velocity program state was not found on this RPC. Is it a devnet endpoint?", "config");
   }
-  const stateAccount = coder.accounts.decode<{ whitelistMint: PublicKey }>("state", stateInfo.data as never);
+  const stateAccount = coder.accounts.decode<{ whitelistMint: PublicKey; signer: PublicKey }>("state", stateInfo.data as never);
   const spotMarkets = new Map<number, LoadedMarket>();
   const perpMarkets = new Map<number, LoadedMarket>();
   spotKeys.forEach((key, i) => {
@@ -137,6 +139,7 @@ export async function loadCore(sdk: Sdk, web3: Web3, connection: Connection): Pr
     spotMarkets,
     quoteMint,
     quoteTokenProgram: mintInfo.owner,
+    velocitySigner: stateAccount.signer,
     faucet,
   };
 }
@@ -387,9 +390,26 @@ export async function simulateSignSend(
   return { signature };
 }
 
+/** Idempotent create of the wallet's associated token account for the quote mint (no-op when it already exists). */
+function createQuoteTokenAccountInstruction(session: Session, tokenProgram: PublicKey): TransactionInstruction {
+  const { web3, core, authority } = session;
+  return new web3.TransactionInstruction({
+    programId: new web3.PublicKey(ASSOCIATED_TOKEN_PROGRAM),
+    keys: [
+      { pubkey: authority, isSigner: true, isWritable: true },
+      { pubkey: quoteTokenAccount(session), isSigner: false, isWritable: true },
+      { pubkey: authority, isSigner: false, isWritable: false },
+      { pubkey: core.quoteMint, isSigner: false, isWritable: false },
+      { pubkey: web3.SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: tokenProgram, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.from([1]), // CreateIdempotent
+  });
+}
+
 /** Mint test dUSDT to the wallet from the devnet token faucet, creating the wallet's token account if needed. */
 export async function mintTestQuote(session: Session, wallet: SignerWallet, amountUnits: bigint = FAUCET_AMOUNT_UNITS): Promise<SentResult> {
-  const { web3, core, authority } = session;
+  const { web3, core } = session;
   if (!core.faucet) throw new TradeError("The dUSDT mint on this deployment is not controlled by the token faucet", "config");
   if (amountUnits <= 0n || amountUnits > FAUCET_AMOUNT_UNITS * 10n) throw new TradeError("Faucet amount out of range", "config");
   const faucetProgram = new web3.PublicKey(TOKEN_FAUCET_PROGRAM);
@@ -398,18 +418,7 @@ export async function mintTestQuote(session: Session, wallet: SignerWallet, amou
   const ata = quoteTokenAccount(session);
   const [config] = web3.PublicKey.findProgramAddressSync([Buffer.from("faucet_config"), mint.toBuffer()], faucetProgram);
   const [mintAuthority] = web3.PublicKey.findProgramAddressSync([Buffer.from("mint_authority"), mint.toBuffer()], faucetProgram);
-  const createAta = new web3.TransactionInstruction({
-    programId: new web3.PublicKey(ASSOCIATED_TOKEN_PROGRAM),
-    keys: [
-      { pubkey: authority, isSigner: true, isWritable: true },
-      { pubkey: ata, isSigner: false, isWritable: true },
-      { pubkey: authority, isSigner: false, isWritable: false },
-      { pubkey: mint, isSigner: false, isWritable: false },
-      { pubkey: web3.SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: tokenProgram, isSigner: false, isWritable: false },
-    ],
-    data: Buffer.from([1]), // CreateIdempotent
-  });
+  const createAta = createQuoteTokenAccountInstruction(session, tokenProgram);
   // Plain Uint8Array + DataView: the Buffer polyfill in the browser bundle has no BigInt read/write methods.
   const bytes = new Uint8Array(16);
   bytes.set(FAUCET_MINT_TO_USER);
@@ -441,6 +450,40 @@ export async function depositMore(session: Session, wallet: SignerWallet, amount
   if (amountUnits <= 0n) throw new TradeError("Deposit must be positive", "config");
   const user = await fetchUser(session);
   return simulateSignSend(session, wallet, [await depositInstruction(session, amountUnits, user)]);
+}
+
+/**
+ * Withdraws dUSDT from subaccount 0 back to the wallet's token account (created if missing). The withdrawal is
+ * always reduce-only: it is capped to the current deposit balance and can never open a borrow. The program still
+ * enforces margin, so with an open position a large withdrawal fails in simulation before the wallet is asked.
+ * `amountUnits` is in 1e6 base units.
+ */
+export async function withdrawQuote(session: Session, wallet: SignerWallet, amountUnits: bigint): Promise<SentResult> {
+  if (amountUnits <= 0n) throw new TradeError("Withdrawal must be positive", "config");
+  const { sdk, core, authority } = session;
+  const user = await fetchUser(session);
+  const spot = core.spotMarkets.get(QUOTE_MARKET_INDEX)!;
+  const remaining = remainingAccounts(session, { userAccounts: [user], writableSpotMarketIndexes: [QUOTE_MARKET_INDEX] });
+  if (core.quoteTokenProgram.toBase58() === TOKEN_2022_PROGRAM) {
+    remaining.push({ pubkey: core.quoteMint, isSigner: false, isWritable: false });
+  }
+  const withdraw = await sdk.VelocityCore.buildWithdrawInstruction({
+    program: core.program as never,
+    marketIndex: QUOTE_MARKET_INDEX,
+    amount: new sdk.BN(amountUnits.toString()),
+    reduceOnly: true,
+    state: core.state,
+    spotMarket: spot.pubkey,
+    spotMarketVault: spot.vault as PublicKey,
+    velocitySigner: core.velocitySigner,
+    user: userAddress(session),
+    userStats: userStatsAddress(session),
+    userTokenAccount: quoteTokenAccount(session),
+    authority,
+    tokenProgram: core.quoteTokenProgram,
+    remainingAccounts: remaining,
+  });
+  return simulateSignSend(session, wallet, [createQuoteTokenAccountInstruction(session, core.quoteTokenProgram), withdraw]);
 }
 
 export interface OrderRequest {
