@@ -25,6 +25,10 @@ to lose or of leaking something on video. Do the parts in order. Do not skip the
 - **"Mainnet needs a mainnet RPC endpoint":** `NEXT_PUBLIC_SOLANA_RPC_URL` is missing or looks like devnet. Fix and redeploy.
 - **Order sent but not filled yet:** wait and press the refresh or reopen the session. Do not send it twice.
 - **Withdraw fails with an open position:** close the position first, then withdraw.
+- **Withdraw of the whole balance is refused after a trade (InsufficientCollateral):** this happened on devnet. Withdraw a bit less
+  (for example the balance minus $0.60); the remainder is a small leftover in the account. Say so on camera instead of hiding it.
+- **A new order is refused with InsufficientCollateral while the account looks fine:** stale open orders use margin. Press Cancel all first.
+- **Typing prices:** type 40000, not 40.000. In a browser with an Indonesian locale the dot reads as a decimal point. Check "Reference notional" before signing.
 
 ## C. What must not appear on camera
 
@@ -41,9 +45,11 @@ to lose or of leaking something on video. Do the parts in order. Do not skip the
 4. Create the account and deposit the smallest workable amount. Show the confirmed signature, then open it in an explorer.
 5. Show the account collateral line and the position line.
 6. Place a **limit order far from the market, post only**. Show it is open. Press **Cancel all orders**. Show it is gone.
-7. Place one tiny **market order** (Long). Show the position and its entry price.
+7. Place one tiny **market order** (Long). Show the position and its entry price. On devnet it filled within seconds; on mainnet wait
+   a short while and press nothing twice. If it stays "Flat, 1 open order(s)", cancel it and say it did not fill.
 8. **Close position.** Show the position is None.
-9. **Fill with all collateral**, then **Withdraw**. Show the USDT back in the wallet and open the transaction in an explorer.
+9. Type a withdrawal amount slightly below the collateral (or use **Fill with all collateral** and lower it by about $0.60), then **Withdraw**.
+   Show the USDT back in the wallet and open the transaction in an explorer. Mention the small remainder left in the account.
 10. Say what it cost: compare the starting and ending wallet balance, including SOL. That number is the honest cost of the demo.
 
 Skipped on purpose: builder fee (off unless configured), the test faucet (devnet only), short side (same code path as long;

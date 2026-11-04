@@ -61,18 +61,31 @@ prompt said "Solana Mainnet" and its own simulation reverted. The app cannot cho
 `signTransaction` receives no chain. Use a wallet that can be switched to devnet (Phantom Testnet Mode worked). Do
 not approve a prompt that says Mainnet.
 
-Added afterwards, checked offline only (unit tests with a fake RPC; typecheck, lint, tests and production build pass),
-and **not yet run on chain**: the panel now reads the Velocity account (collateral and position on the open market,
-refreshed after each action), a "Close position" button that sends a reduce-only market order in the opposite
-direction for the full position size, and wallet auto-connect (the wallet reconnects after a page change if it
-was approved before), and a "Withdraw to wallet" action (reduce-only, capped to the deposit balance so it can
-never open a borrow; it creates the wallet's token account if missing, and the program still enforces margin so a
-withdrawal that would leave an open position under-margined fails in simulation). The withdraw instruction bytes
-and accounts match the real Anchor program in `velocity-program.test.ts`. Collateral uses the interest index read when the session opened, so it is approximate and
-excludes unrealized PnL, funding and fees.
+Exercised by the owner later on 2026-11-04 (Phantom, devnet, the deployed site; each confirmed on devnet with a signature):
+6. Withdraw of the full account balance when no perp record existed: 49.700766 dUSDT went back to the wallet, account collateral 0.
+7. Deposit 10, limit order (post only) placed far from the market, then Cancel all.
+8. Long market 0.001 BTC **filled** (the panel then offered "Close position (sell 0.001 BTC, reduce only)"), and Close position
+   returned the position to None. The round trip cost about $0.40 of collateral (fees plus the price cap) on a $77 notional.
+9. Withdraw of 9 dUSDT after the close: 9 dUSDT back in the wallet, 0.595794 left in the account.
 
-Not checked: the builder-code path against the real program (only encoded and compared offline); withdrawals (not
-implemented); a position view, fills, funding, margin behavior and liquidation; other wallets; limit orders.
+Things the owner's runs showed, worth knowing:
+- Open orders count toward the margin requirement. With two stale open orders (earlier market orders that had not filled
+  yet), a new limit order was refused in simulation with InsufficientCollateral (6003); Cancel all fixed it.
+- After a position is closed, the account still carries a perp record with unsettled PnL. A withdrawal of the **whole**
+  balance was refused in simulation (InsufficientCollateral); withdrawing a bit less worked. Nothing was sent when it was refused.
+- In a browser with an Indonesian locale, a price typed as 40.000 is read as 40, not 40,000. Type 40000 and check the
+  "Reference notional" row before signing.
+- The collateral line is the spot balance read with the interest index from when the session opened; it can be one
+  micro-unit off (9.999999 after a deposit of 10).
+
+Not checked on chain: the builder-code path (only encoded and compared offline), the short side after the first
+trials, funding and liquidation behavior, other wallets, and anything on mainnet. The collateral line excludes
+unrealized PnL, funding and fees.
+
+MetaMask: its Solana network list offered Mainnet only (no Devnet, with "Show test networks" on), so its signing
+prompt said "Solana Mainnet" and its own simulation reverted. The app cannot choose the network for the wallet:
+`signTransaction` receives no chain. Use a wallet that can be switched to devnet (Phantom Testnet Mode worked). Do
+not approve a prompt that says Mainnet.
 
 ## Owner checklist
 

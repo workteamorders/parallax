@@ -26,17 +26,19 @@ that day (about $93.5) this is roughly $8.9 in total. The collateral on Velocity
 first have to swap SOL for it, and you must keep some SOL for network fees and the one-time account rent. With about
 $9 in total, the order size you can use is very small and fees are a large share of it.
 
-## 1. Proven on devnet (nothing real until all are ticked)
+## 1. Proven on devnet (done by you on 2026-11-03 and 2026-11-04)
 
-- [x] Faucet, create account and deposit, market long and short, cancel all (done by you on 2026-11-03)
-- [ ] Position and collateral view shows the numbers you expect after an order
-- [ ] **Close position** brings the position to zero (reduce-only)
-- [ ] **Withdraw to wallet**: after closing, "Fill with all collateral" then Withdraw, and the dUSDT is back in the wallet
+- [x] Faucet, create account and deposit, market long and short, cancel all
+- [x] Position and collateral view shows the numbers you expect after an order
+- [x] Long market order filled, and **Close position** brought the position to zero (reduce-only)
+- [x] **Withdraw to wallet** returned funds (the full balance when no perp record existed; 9 of 9.6 after a trade)
+- [x] Limit order (post only) placed and cancelled
 - [ ] You looked up at least one of these transactions in a Solana explorer (devnet) and saw it confirmed
-- [ ] A limit order placed and cancelled
 
-Why withdraw comes first: it is the only way money leaves Velocity. If it fails on mainnet, funds stay in the
-protocol account.
+Known behaviours to expect on mainnet too:
+- A round trip (open then close) costs real money: about 0.5% of the notional in the devnet run. On a $5 order that is a few cents; fees on mainnet may differ.
+- After closing, withdrawing the whole balance can be refused until a little is left; withdraw slightly less. A small remainder may stay in the account.
+- Open orders use margin. Cancel them before depositing or withdrawing around a trade.
 
 ## 2. Built (code), still to be proven
 
@@ -45,7 +47,7 @@ protocol account.
 - [x] Mainnet RPC and USDT mint checks, faucet disabled, type-MAINNET unlock, red warning
 - [x] Simulation before every wallet prompt (same path as devnet)
 - [ ] A paid RPC endpoint set in `NEXT_PUBLIC_SOLANA_RPC_URL` (public RPCs rate-limit and can drop transactions)
-- [ ] First real run by you with the smallest amount (section 4); nothing in this code has touched real funds yet
+- [ ] First real run by you with the smallest amount (section 4); nothing in this code has touched real funds yet. Close and Withdraw are proven on devnet only.
 - [ ] Mainnet may gate new accounts behind a whitelist ticket token (the program state has a whitelist mint). If so, creating the account fails in simulation and nothing is sent; that is expected and safe.
 
 Honest limit: the app cannot check which network your wallet is set to. Signing receives no chain, and the app sends the
