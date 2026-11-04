@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { LoaderCircle, FlaskConical, TriangleAlert } from "lucide-react";
+import { CircleAlert, CircleCheck, LoaderCircle, FlaskConical, TriangleAlert, X } from "lucide-react";
 import type { Perp } from "@parallax/shared";
 import { useObservatory } from "./provider";
 import { usd } from "@/lib/format";
@@ -57,6 +58,19 @@ const signedUnitsToDecimal = (units: bigint, decimals: number) =>
 
 type Notice ={ tone: "ok" | "error"; text: string; logs?: string[] } | null;
 
+/** A pop-up for one action. It starts as "pending", then becomes "ok" or "error". Errors stay until closed. */
+interface Toast {
+  id: number;
+  tone: "pending" | "ok" | "error";
+  title: string;
+  text: string;
+  signature?: string;
+}
+
+const TOAST_OK_MS = 12_000;
+const explorerUrl = (signature: string, network: "devnet" | "mainnet-beta") =>
+  `https://explorer.solana.com/tx/${signature}${network === "devnet" ? "?cluster=devnet" : ""}`;
+
 export function DevnetTicket({ perp }: { perp?: Perp }) {
   const { data } = useObservatory();
   const wallet = useWallet();
@@ -66,6 +80,22 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
   const rpcUrl = RPC_ENV ?? (isMain ? "" : DEVNET_RPC_DEFAULT);
   const limits = isMain ? MAINNET_LIMITS : undefined;
   const [ack, setAck] = useState("");
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastId = useRef(0);
+  const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
+  const dismissToast = useCallback((id: number) => {
+    const timer = timers.current.get(id);
+    if (timer) clearTimeout(timer);
+    timers.current.delete(id);
+    setToasts((all) => all.filter((t) => t.id !== id));
+  }, []);
+  useEffect(() => {
+    const pending = timers.current;
+    return () => {
+      pending.forEach((t) => clearTimeout(t));
+      pending.clear();
+    };
+  }, []);
   const mainnetReady = !isMain || ack.trim() === "MAINNET";
   const sessionRef = useRef<Session | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -127,18 +157,36 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
   );
 
   const run = useCallback(async (label: string, work: () => Promise<{ signature: string } | void>) => {
+    const id = ++toastId.current;
+    const settle = (toast: Omit<Toast, "id">) => {
+      setToasts((all) => all.map((t) => (t.id === id ? { id, ...toast } : t)));
+      if (toast.tone === "ok") timers.current.set(id, setTimeout(() => dismissToast(id), TOAST_OK_MS));
+    };
+    setToasts((all) => [
+      ...all.slice(-3),
+      { id, tone: "pending", title: label, text: `Simulating, then waiting for your wallet and for confirmation on ${network}.` },
+    ]);
     setBusy(label);
     setNotice(null);
     try {
       const result = await work();
       setNotice({ tone: "ok", text: result ? `${label} confirmed on ${network}. Signature ${result.signature}` : `${label} done` });
+      settle({
+        tone: "ok",
+        title: `${label}: success`,
+        text: result ? `Confirmed on ${network}.` : "Done.",
+        signature: result?.signature,
+      });
     } catch (error) {
+      const text = error instanceof Error ? error.message : "Unexpected error";
       if (error instanceof TradeError) setNotice({ tone: "error", text: error.message, logs: error.logs?.slice(-6) });
-      else setNotice({ tone: "error", text: error instanceof Error ? error.message : "Unexpected error" });
+      else setNotice({ tone: "error", text });
+      const short = text.length > 220 ? `${text.slice(0, 220)}…` : text;
+      settle({ tone: "error", title: `${label}: failed, nothing was sent`, text: short });
     } finally {
       setBusy(null);
     }
-  }, [network]);
+  }, [network, dismissToast]);
 
   const connect = () =>
     run("Connect", async () => {
@@ -493,6 +541,31 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
           </>
         )}
       </p>
+      {typeof document !== "undefined" &&
+        createPortal(
+          <div className="tx-toasts" aria-live="polite" aria-atomic="false">
+            {toasts.map((t) => (
+              <div key={t.id} className={`tx-toast ${t.tone}`} role={t.tone === "error" ? "alert" : "status"}>
+                <span className="tx-toast-icon">
+                  {t.tone === "pending" ? <LoaderCircle size={16} className="spin" /> : t.tone === "ok" ? <CircleCheck size={16} /> : <CircleAlert size={16} />}
+                </span>
+                <div className="tx-toast-body">
+                  <strong>{t.title}</strong>
+                  <p>{t.text}</p>
+                  {t.signature && (
+                    <a href={explorerUrl(t.signature, network)} target="_blank" rel="noopener noreferrer">
+                      View on explorer
+                    </a>
+                  )}
+                </div>
+                <button type="button" className="tx-toast-close" aria-label="Dismiss notification" onClick={() => dismissToast(t.id)}>
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>,
+          document.body,
+        )}
     </section>
   );
 }

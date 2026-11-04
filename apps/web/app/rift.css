@@ -2744,3 +2744,44 @@ body::before {
 .mainnet-warning strong {
   color: #ff8a80;
 }
+
+/* Transaction pop-ups, shown above everything for each action in the trading panel. */
+.tx-toasts {
+  position: fixed;
+  right: 18px;
+  bottom: 52px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(380px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.tx-toast {
+  pointer-events: auto;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 12px 12px 14px;
+  border: 1px solid var(--line, #2c2c30);
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: #151517;
+  color: #ece6e0;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  animation: tx-toast-in 0.22s ease-out;
+}
+.tx-toast.pending { border-left-color: #8d8780; }
+.tx-toast.ok { border-left-color: #4ec27a; }
+.tx-toast.error { border-left-color: #ff6b5e; }
+.tx-toast-icon { padding-top: 2px; display: inline-flex; }
+.tx-toast.ok .tx-toast-icon { color: #4ec27a; }
+.tx-toast.error .tx-toast-icon { color: #ff6b5e; }
+.tx-toast-body { flex: 1; min-width: 0; }
+.tx-toast-body strong { display: block; font-size: 13px; }
+.tx-toast-body p { margin: 4px 0 0; font-size: 12px; line-height: 1.45; color: #b9b2ab; overflow-wrap: anywhere; }
+.tx-toast-body a { display: inline-block; margin-top: 6px; font-size: 12px; color: #ef825d; }
+.tx-toast-close { background: none; border: 0; color: #8d8780; cursor: pointer; padding: 2px; }
+.tx-toast-close:hover { color: #ece6e0; }
+@keyframes tx-toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .tx-toast { animation: none; } }
