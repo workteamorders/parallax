@@ -1551,7 +1551,7 @@ function TradePanel({ perp }: { perp?: Perp }) {
         </div>
         <div>
           <dt>Network fee</dt>
-          <dd>Not simulated</dd>
+          <dd>Shown by your wallet</dd>
         </div>
       </dl>
       <button

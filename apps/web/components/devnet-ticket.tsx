@@ -164,7 +164,7 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
     };
     setToasts((all) => [
       ...all.slice(-3),
-      { id, tone: "pending", title: label, text: `Simulating, then waiting for your wallet and for confirmation on ${network}.` },
+      { id, tone: "pending", title: label, text: `Checking, then waiting for your wallet and for confirmation on ${network}.` },
     ]);
     setBusy(label);
     setNotice(null);
@@ -262,8 +262,8 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
             <strong>MAINNET. Real USDT. You can lose all of it.</strong>
             Safety limits in this app: the account may hold at most {limitDollars(MAINNET_LIMITS.maxDepositUnits)} in
             total, and one new order may be at most {limitDollars(MAINNET_LIMITS.maxOrderQuoteUnits)} at its price
-            cap. Closing a position and withdrawing are never limited. Your wallet signs every transaction after a
-            simulation, and its prompt must say Solana Mainnet. Perpetual futures are leveraged and can be liquidated.
+            cap. Closing a position and withdrawing are never limited. Your wallet signs every transaction, and each
+            one is checked first. Its prompt must say Solana Mainnet. Perpetual futures are leveraged and can be liquidated.
             This is not investment advice, and the first mainnet use of this panel has not been proven yet.
           </p>
         </div>
@@ -272,7 +272,7 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
           <FlaskConical size={14} />
           <p>
             <strong>Test funds only. Not verified end to end.</strong>
-            Your wallet signs every transaction after a simulation. Quotes above are mainnet data, devnet prices
+            Your wallet signs every transaction, and each one is checked first. Quotes above are mainnet data, devnet prices
             differ. Collateral is dUSDT. This is not a recommendation and nothing here touches mainnet.
           </p>
         </div>
@@ -282,7 +282,7 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
         <div className="reference-preview" role="status">
           <strong>Working</strong>
           <p>
-            {busy}: simulating, then waiting for your wallet, then waiting for confirmation on {network}. This can take up to a
+            {busy}: checking, then waiting for your wallet, then waiting for confirmation on {network}. This can take up to a
             minute. Do not press the button again.
           </p>
         </div>
@@ -493,13 +493,13 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
             </div>
             <div>
               <dt>Protocol and network fee</dt>
-              <dd>Shown by your wallet after simulation</dd>
+              <dd>Shown by your wallet before you confirm</dd>
             </div>
           </dl>
           {orderBlocked && <p className="margin-disclosure">{orderBlocked}</p>}
           <button className="button primary full" disabled={!canOrder} onClick={submitOrder}>
             {busy && busy.startsWith(side) ? <LoaderCircle size={14} className="spin" /> : null}
-            Simulate, then sign {side} {kind}
+            Place {side} {kind}
           </button>
           <button
             className="button full"

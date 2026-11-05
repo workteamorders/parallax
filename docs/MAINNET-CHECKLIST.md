@@ -16,10 +16,10 @@ What the code enforces on mainnet (all in the browser, `lib/trade-network.ts`, w
 
 ## 0. Your own limits (fill these in before anything else)
 
-- Most I accept to lose in total: $____
-- Largest single order: $____
-- Largest total deposit into Velocity: $____
-- Date I decided these numbers: ____
+- Most I accept to lose in total: $5
+- Largest single order: $3
+- Largest total deposit into Velocity: $5
+- Date I decided these numbers: 2026-11-04
 
 Reference point: the wallet you gave me (MetaMask, `41us3N…u5bu`) holds 0.0949 SOL. At the SOL-PERP price on the site
 that day (about $93.5) this is roughly $8.9 in total. The collateral on Velocity is a stablecoin, not SOL, so you would
@@ -33,7 +33,7 @@ $9 in total, the order size you can use is very small and fees are a large share
 - [x] Long market order filled, and **Close position** brought the position to zero (reduce-only)
 - [x] **Withdraw to wallet** returned funds (the full balance when no perp record existed; 9 of 9.6 after a trade)
 - [x] Limit order (post only) placed and cancelled
-- [ ] You looked up at least one of these transactions in a Solana explorer (devnet) and saw it confirmed
+- [x] You looked up at least one of these transactions in a Solana explorer (devnet) and saw it confirmed
 
 Known behaviours to expect on mainnet too:
 - A round trip (open then close) costs real money: about 0.5% of the notional in the devnet run. On a $5 order that is a few cents; fees on mainnet may differ.
