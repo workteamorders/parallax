@@ -368,7 +368,7 @@ function WalletDialog({
       setError(
         caught instanceof Error &&
           caught.message.startsWith("Not available in live-only mode")
-          ? "Sign-in needs the database, which live-only mode does not have. Your wallet is connected, and the devnet trading panel does not need a sign-in."
+          ? "Sign-in is not available on this deployment. Your wallet is still connected, and the trading panel does not need a sign-in."
           : "Sign-in was declined or the session could not be verified. No transaction was submitted.",
       );
     } finally {

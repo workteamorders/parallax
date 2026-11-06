@@ -36,7 +36,28 @@ function cachedTerminal() {
   return liveCache.value;
 }
 const noStore = { "content-type": "application/json", "cache-control": "no-store" };
+
+// Accounts (wallet sign-in, watchlist, in-app alerts) run serverless when a Postgres URL is configured.
+// Without DATABASE_URL the live-only behaviour below is unchanged.
+const accountPath = /^(auth\/(challenge|verify|session|logout)|watchlist(\/.+)?|alerts(\/.+)?)$/;
+let accountHandler: ((req: Request, path: string) => Promise<Response>) | null = null;
+async function account(req: NextRequest, path: string): Promise<Response> {
+  if (!accountHandler) {
+    const [{ createAccountHandler }, { createNeonStore }] = await Promise.all([import("@/lib/account"), import("@/lib/account-store")]);
+    accountHandler = createAccountHandler({
+      store: createNeonStore(process.env.DATABASE_URL as string),
+      now: () => new Date(),
+      allowedOrigin: (r) => process.env.WEB_ORIGIN ?? new URL(r.url).origin,
+      themeExists: async (id) => ((await cachedTerminal()) as { themes: { id: string }[] }).themes.some((t) => t.id === id),
+      network: process.env.SOLANA_NETWORK === "mainnet-beta" ? "mainnet" : "devnet",
+      production: process.env.NODE_ENV === "production",
+    });
+  }
+  return accountHandler(req, path);
+}
+
 async function live(req: NextRequest, path: string): Promise<Response> {
+  if (process.env.DATABASE_URL && accountPath.test(path)) return account(req, path);
   if (req.method !== "GET")
     return Response.json({ error: "Not available in live-only mode (no database)" }, { status: 501, headers: noStore });
   if (path === "terminal") {
