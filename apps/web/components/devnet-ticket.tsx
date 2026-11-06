@@ -7,6 +7,7 @@ import { CircleAlert, CircleCheck, LoaderCircle, FlaskConical, TriangleAlert, X 
 import type { Perp } from "@parallax/shared";
 import { useObservatory } from "./provider";
 import { usd } from "@/lib/format";
+import { addActivity, explorerTxUrl, loadActivity, saveActivity, type Activity } from "@/lib/activity";
 import {
   builderFeeUsd,
   clampBuilderFee,
@@ -81,6 +82,23 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
   const limits = isMain ? MAINNET_LIMITS : undefined;
   const [ack, setAck] = useState("");
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // Session activity: what this panel did in this tab. Kept in sessionStorage only (see lib/activity.ts).
+  const [activity, setActivity] = useState<Activity[]>([]);
+  const activityRef = useRef<Activity[]>([]);
+  useEffect(() => {
+    activityRef.current = loadActivity();
+    setActivity(activityRef.current);
+  }, []);
+  const recordActivity = useCallback((entry: Activity) => {
+    activityRef.current = addActivity(activityRef.current, entry);
+    saveActivity(activityRef.current);
+    setActivity(activityRef.current);
+  }, []);
+  const clearActivity = useCallback(() => {
+    activityRef.current = [];
+    saveActivity([]);
+    setActivity([]);
+  }, []);
   const toastId = useRef(0);
   const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
   const dismissToast = useCallback((id: number) => {
@@ -170,6 +188,7 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
     setNotice(null);
     try {
       const result = await work();
+      recordActivity({ id, at: new Date().toISOString(), label, status: "confirmed", network, ...(result ? { signature: result.signature } : {}) });
       setNotice({ tone: "ok", text: result ? `${label} confirmed on ${network}. Signature ${result.signature}` : `${label} done` });
       settle({
         tone: "ok",
@@ -182,11 +201,12 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
       if (error instanceof TradeError) setNotice({ tone: "error", text: error.message, logs: error.logs?.slice(-6) });
       else setNotice({ tone: "error", text });
       const short = text.length > 220 ? `${text.slice(0, 220)}…` : text;
+      recordActivity({ id, at: new Date().toISOString(), label, status: "not-sent", network, reason: short });
       settle({ tone: "error", title: `${label}: failed, nothing was sent`, text: short });
     } finally {
       setBusy(null);
     }
-  }, [network, dismissToast]);
+  }, [network, dismissToast, recordActivity]);
 
   const connect = () =>
     run("Connect", async () => {
@@ -541,6 +561,40 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
           </>
         )}
       </p>
+      {activity.some((a) => a.network === network) && (
+        <div className="activity" aria-label="Session activity">
+          <div className="activity-head">
+            <strong>Session activity</strong>
+            <button type="button" onClick={clearActivity}>
+              Clear
+            </button>
+          </div>
+          <ul>
+            {activity
+              .filter((a) => a.network === network)
+              .map((a) => {
+                const link = a.signature ? explorerTxUrl(a.signature, a.network) : null;
+                return (
+                  <li key={a.id} className={a.status}>
+                    <time dateTime={a.at}>{new Date(a.at).toLocaleTimeString()}</time>
+                    <span className="activity-label">{a.label === "Connect" ? "Open session" : a.label}</span>
+                    <span className="activity-status">{a.status === "confirmed" ? "Confirmed" : "Not sent"}</span>
+                    {link && a.signature ? (
+                      <a href={link} target="_blank" rel="noopener noreferrer">
+                        {a.signature.slice(0, 6)}…{a.signature.slice(-6)}
+                      </a>
+                    ) : a.reason ? (
+                      <span className="activity-reason">{a.reason}</span>
+                    ) : (
+                      <span />
+                    )}
+                  </li>
+                );
+              })}
+          </ul>
+          <p className="activity-note">Kept in this browser tab only and cleared when the tab closes.</p>
+        </div>
+      )}
       {typeof document !== "undefined" &&
         createPortal(
           <div className="tx-toasts" aria-live="polite" aria-atomic="false">

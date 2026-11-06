@@ -2785,3 +2785,22 @@ body::before {
 .tx-toast-close:hover { color: #ece6e0; }
 @keyframes tx-toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .tx-toast { animation: none; } }
+
+/* Session activity: a plain log of what the trading panel did in this tab. */
+.activity { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--line, #2c2c30); border-radius: 12px; background: rgba(255, 255, 255, 0.025); }
+.activity-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.activity-head strong { font-size: 13px; letter-spacing: 0.04em; color: #ece6e0; }
+.activity-head button { background: none; border: 0; color: #8d8780; font-size: 12px; cursor: pointer; }
+.activity-head button:hover { color: #ece6e0; }
+.activity ul { list-style: none; margin: 0; padding: 0; }
+.activity li { display: grid; grid-template-columns: 84px minmax(0, 1.4fr) 84px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 8px 0; border-top: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; color: #ece6e0; }
+.activity li:first-child { border-top: 0; }
+.activity time { color: #8d8780; font-variant-numeric: tabular-nums; }
+.activity-label { overflow-wrap: anywhere; }
+.activity li.confirmed .activity-status { color: #4ec27a; }
+.activity li.not-sent .activity-status { color: #ff8a80; }
+.activity a { color: #ef825d; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; text-decoration: none; }
+.activity a:hover { text-decoration: underline; }
+.activity-reason { color: #b9b2ab; font-size: 12px; overflow-wrap: anywhere; }
+.activity-note { margin: 8px 0 0; font-size: 12px; color: #8d8780; }
+@media (max-width: 720px) { .activity li { grid-template-columns: 1fr 1fr; } }
