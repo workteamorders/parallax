@@ -414,7 +414,7 @@ function WalletDialog({
         {address ? "Your research session." : "Connect your wallet."}
       </h2>
       <p>
-        Save themes and manage alerts with a Solana wallet. A sign-in signature
+        Save themes to your watchlist with a Solana wallet. A sign-in signature
         never authorizes a trade.
       </p>
       {address ? (
@@ -501,8 +501,8 @@ function WalletDialog({
         </p>
       )}
       <div className="security-note">
-        <ShieldCheck size={16} /> Non-custodial. Execution is currently
-        disabled.
+        <ShieldCheck size={16} /> Non-custodial. Your wallet signs every
+        transaction; this site never holds your keys.
       </div>
     </dialog>
   );
