@@ -36,6 +36,11 @@ const ESCROW_ORDER_SLOTS = 16;
 const MAX_PERP_MARKETS = 16;
 const MAX_SPOT_MARKETS = 8;
 const COMPUTE_UNITS = 800_000;
+/** Mainnet only: a small priority fee so validators do not skip the transaction. 800k units x 50k micro-lamports = 0.00004 SOL at most. */
+const MAINNET_PRIORITY_MICRO_LAMPORTS = 50_000;
+const CONFIRM_POLL_MS = 1_500;
+const CONFIRM_MAX_RPC_FAILURES = 5;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
@@ -53,7 +58,7 @@ export interface SignerWallet {
 export class TradeError extends Error {
   constructor(
     message: string,
-    readonly code: "config" | "simulation" | "rejected" | "ambiguous" | "failed",
+    readonly code: "config" | "simulation" | "rejected" | "ambiguous" | "expired" | "failed",
     readonly logs?: string[],
   ) {
     super(message);
@@ -386,9 +391,51 @@ async function build(session: Session, payer: PublicKey, ixs: TransactionInstruc
   const message = new web3.TransactionMessage({
     payerKey: payer,
     recentBlockhash: latest.blockhash,
-    instructions: [web3.ComputeBudgetProgram.setComputeUnitLimit({ units: COMPUTE_UNITS }), ...ixs],
+    instructions: [
+      web3.ComputeBudgetProgram.setComputeUnitLimit({ units: COMPUTE_UNITS }),
+      ...(session.network === "mainnet-beta" ? [web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: MAINNET_PRIORITY_MICRO_LAMPORTS })] : []),
+      ...ixs,
+    ],
   }).compileToV0Message();
   return { tx: new web3.VersionedTransaction(message), blockhash: latest.blockhash, lastValidBlockHeight: latest.lastValidBlockHeight };
+}
+
+/**
+ * Waits for `signature` by polling signature statuses over plain HTTP (no WebSocket, which public RPC endpoints
+ * often block from a browser). The raw transaction is re-broadcast now and then; it is the same signed bytes, so
+ * it can never land twice. When the blockhash has expired and the signature is still unknown, the transaction can
+ * no longer land, and that is reported as "expired" (nothing happened) instead of "ambiguous".
+ */
+export async function waitForConfirmation(
+  connection: Connection,
+  signature: string,
+  lastValidBlockHeight: number,
+  raw: Uint8Array,
+  pollMs: number = CONFIRM_POLL_MS,
+): Promise<void> {
+  let rpcFailures = 0;
+  for (let round = 1; ; round++) {
+    try {
+      const status = (await connection.getSignatureStatuses([signature])).value[0];
+      if (status?.err) throw new TradeError(`Transaction failed on chain: ${JSON.stringify(status.err)}`, "failed");
+      if (status && (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized")) return;
+      if ((await connection.getBlockHeight("confirmed")) > lastValidBlockHeight) {
+        const last = (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
+        if (last?.err) throw new TradeError(`Transaction failed on chain: ${JSON.stringify(last.err)}`, "failed");
+        if (last && (last.confirmationStatus === "confirmed" || last.confirmationStatus === "finalized")) return;
+        throw new TradeError(
+          `The transaction (${signature}) was not confirmed before it expired, so it was not executed and nothing changed. You can try again.`,
+          "expired",
+        );
+      }
+      rpcFailures = 0;
+    } catch (error) {
+      if (error instanceof TradeError) throw error;
+      if (++rpcFailures >= CONFIRM_MAX_RPC_FAILURES) throw error;
+    }
+    if (round % 3 === 0) connection.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 }).catch(() => undefined);
+    await sleep(pollMs);
+  }
 }
 
 /**
@@ -420,8 +467,7 @@ export async function simulateSignSend(
     throw new TradeError(error instanceof Error ? error.message : "Send failed", "failed");
   }
   try {
-    const result = await session.connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
-    if (result.value.err) throw new TradeError(`Transaction failed on chain: ${JSON.stringify(result.value.err)}`, "failed");
+    await waitForConfirmation(session.connection, signature, lastValidBlockHeight, raw);
   } catch (error) {
     if (error instanceof TradeError) throw error;
     throw new TradeError(`Submitted (${signature}) but confirmation did not finish. It may or may not have gone through; check the explorer before retrying.`, "ambiguous");

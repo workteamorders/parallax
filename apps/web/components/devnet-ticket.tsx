@@ -202,7 +202,14 @@ export function DevnetTicket({ perp }: { perp?: Perp }) {
       else setNotice({ tone: "error", text });
       const short = text.length > 220 ? `${text.slice(0, 220)}…` : text;
       recordActivity({ id, at: new Date().toISOString(), label, status: "not-sent", network, reason: short });
-      settle({ tone: "error", title: `${label}: failed, nothing was sent`, text: short });
+      const code = error instanceof TradeError ? error.code : null;
+      const title =
+        code === "ambiguous"
+          ? `${label}: sent, not confirmed yet`
+          : code === "expired"
+            ? `${label}: not confirmed, nothing changed`
+            : `${label}: failed, nothing was sent`;
+      settle({ tone: "error", title, text: short });
     } finally {
       setBusy(null);
     }
